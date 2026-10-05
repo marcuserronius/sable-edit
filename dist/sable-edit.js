@@ -60,11 +60,6 @@ var SableEdit = (() => {
     return e;
   };
 
-  // src/util.js
-  var num = (el, a) => parseFloat(el.getAttribute(a)) || 0;
-  var rnd = (v) => +v.toFixed(3);
-  var box4 = (x, y, w, h) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
-
   // src/path-math.js
   var lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
   var dc = (p, t) => p.length === 1 ? p[0] : dc(p.slice(1).map((q, k) => lerp(p[k], q, t)), t);
@@ -180,6 +175,78 @@ var SableEdit = (() => {
     else if (fs && dth < 0) dth += 2 * Math.PI;
     return { cx, cy, rx, ry, phi, c, s, th1, dth, pt: (t) => [cx + rx * Math.cos(t) * c - ry * Math.sin(t) * s, cy + rx * Math.cos(t) * s + ry * Math.sin(t) * c] };
   }
+  function arcFit(P, E, arc, kind, p, opts = {}) {
+    const gap = opts.gap || 0, r3 = (v) => +v.toFixed(3);
+    let [rx, ry, phi, fa, fs] = arc;
+    const g0 = arcGeom(P, E, rx, ry, phi, fa, fs);
+    if (!g0) return arc;
+    if (kind === "flip") {
+      const dist = (q) => {
+        const m = q.pt(q.th1 + q.dth / 2);
+        return Math.hypot(m[0] - p[0], m[1] - p[1]);
+      };
+      let best = [fa, fs], bd = dist(g0);
+      for (const a of [0, 1]) for (const s of [0, 1]) {
+        const q = arcGeom(P, E, rx, ry, phi, a, s);
+        if (q && dist(q) < bd - 1e-6) {
+          bd = dist(q);
+          best = [a, s];
+        }
+      }
+      return [rx, ry, phi, best[0], best[1]];
+    }
+    rx = g0.rx;
+    ry = g0.ry;
+    if (kind === "rot") {
+      for (let n = 0; n < 12; n++) {
+        const q = arcGeom(P, E, rx, ry, phi, fa, fs);
+        if (!q) break;
+        phi = Math.atan2(p[1] - q.cy, p[0] - q.cx) * 180 / Math.PI + 180;
+      }
+      if (opts.shift) phi = Math.round(phi / 15) * 15;
+    } else {
+      const X = kind === "rx", t0 = X ? rx : ry, sh = opts.shift;
+      const c = g0.c, s_ = g0.s, hx = (P[0] - E[0]) / 2, hy = (P[1] - E[1]) / 2, x1 = c * hx + s_ * hy, y1 = -s_ * hx + c * hy;
+      const lo = sh ? Math.hypot(x1, y1) : (() => {
+        const [a, o, oth] = X ? [x1, y1, ry] : [y1, x1, rx], k = 1 - (o / oth) ** 2;
+        return k > 1e-12 ? Math.abs(a) / Math.sqrt(k) : 0;
+      })();
+      const tmin = Math.max(Math.ceil(lo * 1e3) / 1e3, 0.1);
+      const res = (t) => {
+        const q = arcGeom(P, E, X || sh ? t : rx, !X || sh ? t : ry, phi, fa, fs);
+        if (!q) return NaN;
+        const dx = p[0] - q.cx, dy = p[1] - q.cy;
+        return X ? dx * q.c + dy * q.s - gap - q.rx : -dx * q.s + dy * q.c - gap - q.ry;
+      };
+      let v = tmin;
+      if (res(tmin) > 0) {
+        const hi = 50 * (Math.hypot(E[0] - P[0], E[1] - P[1]) + t0 + tmin), N = 160, k = Math.pow(hi / tmin, 1 / N);
+        let best = null, prev = { t: tmin, f: res(tmin) };
+        for (let n = 1, t = tmin * k; n <= N; n++, t *= k) {
+          const f = res(t);
+          if (isNaN(f)) continue;
+          if (prev.f < 0 !== f < 0) {
+            let a = prev.t, b = t, fa_ = prev.f;
+            for (let m = 0; m < 40; m++) {
+              const mid = (a + b) / 2, fm = res(mid);
+              if (fm < 0 === fa_ < 0) {
+                a = mid;
+                fa_ = fm;
+              } else b = mid;
+            }
+            const r = (a + b) / 2;
+            if (best === null || Math.abs(r - t0) < Math.abs(best - t0)) best = r;
+          }
+          prev = { t, f };
+        }
+        v = best ?? hi;
+      }
+      if (X || sh) rx = v;
+      if (!X || sh) ry = v;
+    }
+    phi = ((phi + 180) % 360 + 360) % 360 - 180;
+    return [r3(rx), r3(ry), r3(phi), fa, fs];
+  }
 
   // src/widgets/path.js
   Widgets.register((el) => el.tagName === "path", (ctx) => {
@@ -284,69 +351,82 @@ var SableEdit = (() => {
       const s = segs[i];
       return s && s.t === "A" ? arcGeom(prevPt(i), s.pts[0], ...s.arc) : null;
     };
+    const GAP = 16, gapL = () => {
+      const M = ctx.matrix();
+      return ctx.px(GAP) / (Math.hypot(M.a, M.b) || 1);
+    };
+    const ln = (a, b, o = {}) => {
+      const l = mk("line", { stroke: "var(--acc,#2f6fed)", opacity: o.op || 0.55 });
+      lines.push({ el: l, a, b, ...o });
+      g.append(l);
+    };
+    const ends = (i, k, out) => () => {
+      const q = geom(i);
+      if (!q) return null;
+      const d = (k ? q.ry : q.rx) + out * gapL();
+      return k ? [q.cx - d * q.s, q.cy + d * q.c] : [q.cx + d * q.c, q.cy + d * q.s];
+    };
+    const ctr = (i) => () => {
+      const q = geom(i);
+      return q && [q.cx, q.cy];
+    };
     function arcHandles(s, i) {
-      const mkh = (sq, fill) => {
-        const h = mk(sq ? "rect" : "circle", { style: "pointer-events:all;cursor:move", fill: sq ? "var(--panel,#fff)" : fill, stroke: "var(--acc,#2f6fed)" });
+      const mkh = (fill, cur) => {
+        const h = mk("circle", { style: "pointer-events:all;cursor:" + cur, fill, stroke: "var(--acc,#2f6fed)" });
         gh.append(h);
         return h;
       };
-      arcs.push({ i, ell: g.appendChild(mk("ellipse", { fill: "none", stroke: "var(--acc,#2f6fed)", opacity: 0.6, "vector-effect": "non-scaling-stroke", "stroke-dasharray": "5 3" })) });
-      const hx = mkh(1);
-      items.push({ el: hx, arc: i, n: 1, r: 5, get: () => {
+      const acc = "var(--acc,#2f6fed)", P = () => prevPt(i);
+      arcs.push({ i, ell: g.appendChild(mk("ellipse", { fill: "none", stroke: acc, opacity: 0.6, "vector-effect": "non-scaling-stroke", "stroke-dasharray": "5 3" })) });
+      ln(ctr(i), ends(i, 0, 1), { arc: i, dash: 1, op: 0.8 });
+      ln(ctr(i), ends(i, 1, 1), { arc: i, dash: 1, op: 0.8 });
+      const rotPos = () => {
         const q = geom(i);
-        return q && [q.cx + q.rx * q.c, q.cy + q.rx * q.s];
-      } });
-      bind(hx, () => {
-        act = i;
-        layout();
-      }, (p, p0, ev) => {
+        if (!q) return null;
+        const d = q.rx + gapL();
+        return [q.cx - d * q.c, q.cy - d * q.s];
+      };
+      ln(() => {
         const q = geom(i);
-        if (!q) return;
-        const dx = p[0] - q.cx, dy = p[1] - q.cy, d = Math.max(Math.hypot(dx, dy), 0.1);
-        s.arc[0] = rnd(d);
-        if (ev.shiftKey) s.arc[1] = rnd(d);
-        s.arc[2] = rnd(Math.atan2(dy, dx) * 180 / Math.PI);
-      });
-      const hy = mkh(1);
-      items.push({ el: hy, arc: i, n: 1, r: 5, get: () => {
-        const q = geom(i);
-        return q && [q.cx - q.ry * q.s, q.cy + q.ry * q.c];
-      } });
-      bind(hy, () => {
-        act = i;
-        layout();
-      }, (p, p0, ev) => {
-        const q = geom(i);
-        if (!q) return;
-        const d = Math.max(Math.abs((p[0] - q.cx) * -q.s + (p[1] - q.cy) * q.c), 0.1);
-        s.arc[1] = rnd(d);
-        if (ev.shiftKey) s.arc[0] = rnd(d);
-      });
-      const hm = mkh(0, "var(--acc,#2f6fed)");
+        return q && [q.cx - q.rx * q.c, q.cy - q.rx * q.s];
+      }, rotPos, { arc: i });
+      const drag = (h, pos, kind, r, fill) => {
+        items.push({ el: h, arc: i, r, get: pos });
+        let off = [0, 0];
+        bind(
+          h,
+          (p0) => {
+            const c = pos();
+            off = c ? [p0[0] - c[0], p0[1] - c[1]] : [0, 0];
+            act = i;
+            layout();
+          },
+          (p, p0, ev) => {
+            s.arc = arcFit(P(), s.pts[0], s.arc, kind, [p[0] - off[0], p[1] - off[1]], { gap: kind === "rot" ? 0 : gapL(), shift: ev.shiftKey });
+          }
+        );
+      };
+      drag(mkh(acc, "move"), ends(i, 0, 1), "rx", 4.5);
+      drag(mkh(acc, "move"), ends(i, 1, 1), "ry", 4.5);
+      drag(mkh("var(--panel,#fff)", "grab"), rotPos, "rot", 4.5);
+      const hm = mkh(acc, "move");
       items.push({ el: hm, arc: i, always: 1, r: 4.5, get: () => {
         const q = geom(i);
         return q && q.pt(q.th1 + q.dth / 2);
       } });
-      bind(hm, () => {
-        act = i;
-        layout();
-      }, (p) => {
-        const P = prevPt(i), E = s.pts[0], dist = (q) => {
-          const m = q.pt(q.th1 + q.dth / 2);
-          return Math.hypot(m[0] - p[0], m[1] - p[1]);
-        };
-        const q0 = geom(i);
-        let best = [s.arc[3], s.arc[4]], bd = q0 ? dist(q0) : 1e9;
-        for (const fa of [0, 1]) for (const fs of [0, 1]) {
-          const q = arcGeom(P, E, s.arc[0], s.arc[1], s.arc[2], fa, fs);
-          if (q && dist(q) < bd - 1e-6) {
-            bd = dist(q);
-            best = [fa, fs];
-          }
+      let offm = [0, 0];
+      bind(
+        hm,
+        (p0) => {
+          const c = geom(i) && geom(i).pt(geom(i).th1 + geom(i).dth / 2);
+          offm = c ? [p0[0] - c[0], p0[1] - c[1]] : [0, 0];
+          act = i;
+          layout();
+        },
+        (p) => {
+          s.arc = arcFit(P(), s.pts[0], s.arc, "flip", [p[0] - offm[0], p[1] - offm[1]]);
         }
-        s.arc[3] = best[0];
-        s.arc[4] = best[1];
-      });
+      );
     }
     function build() {
       g.replaceChildren();
@@ -358,11 +438,6 @@ var SableEdit = (() => {
       hit.addEventListener("dblclick", (e) => insert(ctx.toLocal(e)));
       g.append(hit);
       gh = mk("g");
-      const ln = (a, b) => {
-        const l = mk("line", { stroke: "var(--acc,#2f6fed)", opacity: 0.55 });
-        lines.push({ el: l, a, b });
-        g.append(l);
-      };
       segs.forEach((s, i) => {
         if (s.t === "C") {
           ln(() => prevPt(i), () => s.pts[0]);
@@ -388,8 +463,11 @@ var SableEdit = (() => {
       }, w = ctx.px(1.5);
       A(hit, { d: ser(), transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
       lines.forEach((l) => {
-        const a = T(l.a()), b = T(l.b());
-        A(l.el, { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": ctx.px(1) });
+        const a0 = l.a(), b0 = l.b(), on = a0 && b0 && (l.arc === void 0 || l.arc === act);
+        l.el.style.display = on ? "" : "none";
+        if (!on) return;
+        const a = T(a0), b = T(b0);
+        A(l.el, { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": ctx.px(1), "stroke-dasharray": l.dash ? ctx.px(2) + " " + ctx.px(3) : "none" });
       });
       items.forEach((it) => {
         const pt = it.arc !== void 0 && it.arc !== act && !it.always ? null : it.get();
@@ -462,6 +540,11 @@ var SableEdit = (() => {
       g.remove();
     } };
   }
+
+  // src/util.js
+  var num = (el, a) => parseFloat(el.getAttribute(a)) || 0;
+  var rnd = (v) => +v.toFixed(3);
+  var box4 = (x, y, w, h) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
 
   // src/widgets/shapes.js
   Widgets.register((el) => el.tagName === "rect", (ctx) => {

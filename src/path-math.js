@@ -42,3 +42,58 @@ export function arcGeom(p,e,rx,ry,deg,fa,fs){
   if(!fs&&dth>0)dth-=2*Math.PI;else if(fs&&dth<0)dth+=2*Math.PI;
   return {cx,cy,rx,ry,phi,c,s,th1,dth,pt:t=>[cx+rx*Math.cos(t)*c-ry*Math.sin(t)*s,cy+rx*Math.cos(t)*s+ry*Math.sin(t)*c]};
 }
+/* Arc editing: given the fixed endpoints P,E and the current arc params [rx,ry,phi,fa,fs], return new params after
+   dragging one handle to point p (local coords). Pure so it can be unit-tested.
+   kind: 'rx' | 'ry' (that radius only), 'rot' (rotation only), 'flip' (pick the large-arc/sweep combo nearest p).
+   opts.gap: how far the rx/ry handles sit beyond the ellipse (the rotation handle sits that far out on the -x side);
+   opts.shift: keep circular (rx/ry) or snap to 15 degrees (rot).
+   The centre is derived from the endpoints, so it moves whenever a parameter changes. Rather than aim the handle at the
+   pointer from the old centre (which makes it lag and wobble), we solve for the value that puts the handle under it. */
+export function arcFit(P,E,arc,kind,p,opts={}){
+  const gap=opts.gap||0,r3=v=>+v.toFixed(3);let [rx,ry,phi,fa,fs]=arc;
+  const g0=arcGeom(P,E,rx,ry,phi,fa,fs);if(!g0)return arc;
+  if(kind==='flip'){
+    const dist=q=>{const m=q.pt(q.th1+q.dth/2);return Math.hypot(m[0]-p[0],m[1]-p[1])};
+    let best=[fa,fs],bd=dist(g0);
+    for(const a of [0,1])for(const s of [0,1]){const q=arcGeom(P,E,rx,ry,phi,a,s);if(q&&dist(q)<bd-1e-6){bd=dist(q);best=[a,s]}}
+    return [rx,ry,phi,best[0],best[1]];
+  }
+  rx=g0.rx;ry=g0.ry; // bake in radii the SVG spec scaled up to fit, so the drag starts from what is drawn
+  if(kind==='rot'){
+    for(let n=0;n<12;n++){const q=arcGeom(P,E,rx,ry,phi,fa,fs);if(!q)break;phi=Math.atan2(p[1]-q.cy,p[0]-q.cx)*180/Math.PI+180}
+    if(opts.shift)phi=Math.round(phi/15)*15;
+  }else{
+    const X=kind==='rx',t0=X?rx:ry,sh=opts.shift;
+    /* Smallest value the dragged radius can take before the SVG spec starts scaling the whole ellipse up to span the
+       chord. Below that the drawn shape no longer depends on the handle (rx=60 and rx=0.1 look alike, and the other radius
+       gets inflated by the scale factor), so there is nothing to solve for: the handle just stops there. In the chord's
+       frame (x1,y1 = half-chord along the axes) the arc fits while x1^2/rx^2 + y1^2/ry^2 <= 1. */
+    const c=g0.c,s_=g0.s,hx=(P[0]-E[0])/2,hy=(P[1]-E[1])/2,x1=c*hx+s_*hy,y1=-s_*hx+c*hy;
+    const lo=sh?Math.hypot(x1,y1):(()=>{const [a,o,oth]=X?[x1,y1,ry]:[y1,x1,rx],k=1-(o/oth)**2;return k>1e-12?Math.abs(a)/Math.sqrt(k):0})();
+    const tmin=Math.max(Math.ceil(lo*1000)/1000,.1);
+    // residual: how far the drawn handle is from the pointer, measured along the handle's own axis
+    const res=t=>{
+      const q=arcGeom(P,E,X||sh?t:rx,!X||sh?t:ry,phi,fa,fs);if(!q)return NaN;
+      const dx=p[0]-q.cx,dy=p[1]-q.cy;
+      return X?dx*q.c+dy*q.s-gap-q.rx:-dx*q.s+dy*q.c-gap-q.ry;
+    };
+    let v=tmin;
+    if(res(tmin)>0){ // pointer is beyond the minimum: bracket the root on a log grid, keep the one nearest the current value
+      const hi=50*(Math.hypot(E[0]-P[0],E[1]-P[1])+t0+tmin),N=160,k=Math.pow(hi/tmin,1/N);
+      let best=null,prev={t:tmin,f:res(tmin)};
+      for(let n=1,t=tmin*k;n<=N;n++,t*=k){
+        const f=res(t);if(isNaN(f))continue;
+        if((prev.f<0)!==(f<0)){
+          let a=prev.t,b=t,fa_=prev.f;
+          for(let m=0;m<40;m++){const mid=(a+b)/2,fm=res(mid);if((fm<0)===(fa_<0)){a=mid;fa_=fm}else b=mid}
+          const r=(a+b)/2;if(best===null||Math.abs(r-t0)<Math.abs(best-t0))best=r;
+        }
+        prev={t,f};
+      }
+      v=best??hi;
+    }
+    if(X||sh)rx=v;if(!X||sh)ry=v;
+  }
+  phi=((phi+180)%360+360)%360-180;
+  return [r3(rx),r3(ry),r3(phi),fa,fs];
+}
