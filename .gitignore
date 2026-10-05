@@ -1,0 +1,43 @@
+# --- Node ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.eslintcache
+*.tgz
+.env
+.env.*
+!.env.example
+
+# --- Test output ---
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+coverage/
+.nyc_output/
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.DocumentRevisions-V100
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+Icon?
+
+# --- Editors ---
+.idea/
+.vscode/*
+!.vscode/settings.json
+*.sublime-workspace
+# (keep *.sublime-project if you want to share it)
+*.swp
+*~

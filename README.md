@@ -1,0 +1,32 @@
+# SableEdit
+
+Drop-in SVG element editor (paths first). No runtime dependencies.
+
+## Using it
+Plain script tag (defines `window.SableEdit`):
+
+    <script src="dist/sable-edit.js"></script>
+    <script>const ed = SableEdit.attach(document.querySelector('svg'));</script>
+
+ES module:
+
+    import { attach } from './dist/sable-edit.esm.js';
+
+`dist/sable-edit.min.js` is the minified script-tag build. See the header comment in `src/banner.txt` for the full API.
+
+## Developing
+Node is for development only (unit tests, build, local server); the shipped files in `dist/` need nothing.
+
+    npm install
+    npx playwright install   # one-time, for e2e tests
+    npm run serve            # builds, then serves http://localhost:8080/demo/
+    npm run test:unit        # pure logic (node:test), no browser
+    npm test                 # unit + e2e (Playwright)
+    npm run build            # src/ -> dist/
+
+## Layout
+- `src/` ES module source. `path-math.js` is pure (no DOM) and unit-testable in Node.
+- `src/widgets/` one file per widget family. Registration order matters (see `src/index.js`): the registry returns the first match, so the catch-all fallback is imported last.
+- `dist/` built output, committed so the demo works without a build step.
+- `demo/` widget demo page, loads `dist/sable-edit.js`.
+- `test/unit/`, `test/e2e/`

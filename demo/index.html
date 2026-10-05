@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SableEdit demo</title>
+<style>
+  :root{color-scheme:light;--acc:#2f6fed;--panel:#fff}
+  body{font:15px/1.5 system-ui,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;color:#222}
+  h1{font-size:20px;margin:0 0 4px}
+  #bar{display:flex;gap:8px;align-items:center;margin:12px 0}
+  button{font:inherit;padding:4px 12px;border:1px solid #ccc;border-radius:6px;background:#fff;cursor:pointer}
+  button:disabled{opacity:.45;cursor:default}
+  #readout{margin-left:auto;font:12px ui-monospace,Menlo,monospace;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  svg{width:100%;height:auto;display:block;border:1px solid #ddd;border-radius:8px;background:#fff;touch-action:none}
+  svg text{font:12px system-ui,sans-serif;fill:#666;pointer-events:none}
+  ul{margin:16px 0 0;padding-left:20px;font-size:14px}
+</style></head>
+<body>
+<h1>SableEdit demo</h1>
+<div>Click any shape to edit it. Click empty space to deselect. Every shape here is a live element; edits write straight to its attributes.</div>
+<div id="bar"><button id="undo">Undo</button><button id="redo">Redo</button><span id="readout">nothing selected</span></div>
+
+<svg id="art" viewBox="0 0 720 880">
+  <g transform="translate(0 0)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">path · cubic</text>
+    <path class="edit" d="M20 150 C 40 50, 100 50, 110 120 S 150 170, 165 70" fill="none" stroke="#c0392b" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <g transform="translate(180 0)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">path · closed (Z)</text>
+    <path class="edit" d="M30 110 C 30 60, 90 50, 130 70 C 170 90, 160 160, 100 165 C 60 170, 30 150, 30 110 Z" fill="#fadbd8" stroke="#c0392b" stroke-width="3"/>
+  </g>
+  <g transform="translate(360 0)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">path · quad, line, arc</text>
+    <path class="edit" d="M20 140 Q 55 40 90 110 T 160 90 L 160 150 A 30 30 0 0 1 100 150" fill="none" stroke="#c0392b" stroke-width="3"/>
+  </g>
+  <g transform="translate(540 0)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">path in rotated group</text>
+    <g transform="translate(90 120) rotate(-15) scale(1.3)"><path class="edit" d="M-45 20 C -20 -50, 20 -50, 45 20" fill="none" stroke="#c0392b" stroke-width="3"/></g>
+  </g>
+  <g transform="translate(0 220)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">rect (rotated)</text>
+    <rect class="edit" x="30" y="60" width="120" height="80" fill="#fcf3cf" stroke="#b7950b" stroke-width="3" transform="rotate(10 90 100)"/>
+  </g>
+  <g transform="translate(180 220)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">circle</text>
+    <circle class="edit" cx="90" cy="110" r="50" fill="#d5f5e3" stroke="#1e8449" stroke-width="3"/>
+  </g>
+  <g transform="translate(360 220)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">ellipse</text>
+    <ellipse class="edit" cx="90" cy="110" rx="65" ry="35" fill="#e8daef" stroke="#7d3c98" stroke-width="3"/>
+  </g>
+  <g transform="translate(540 220)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">line</text>
+    <line class="edit" x1="25" y1="150" x2="155" y2="70" stroke="#333" stroke-width="5" stroke-linecap="round"/>
+  </g>
+  <g transform="translate(0 440)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">polygon</text>
+    <polygon class="edit" points="90,50 150,95 127,165 53,165 30,95" fill="#d6eaf8" stroke="#2874a6" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+  <g transform="translate(180 440)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">polyline</text>
+    <polyline class="edit" points="20,150 55,70 90,140 125,60 160,130" fill="none" stroke="#2874a6" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+  <g transform="translate(360 440)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">polygon · concave</text>
+    <polygon class="edit" points="90,45 105,90 155,90 115,118 130,165 90,137 50,165 65,118 25,90 75,90" fill="#fdebd0" stroke="#ca6f1e" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+  <g transform="translate(540 440)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">polyline in scaled group</text>
+    <g transform="translate(90 120) rotate(20) scale(1.4)"><polyline class="edit" points="-40,20 -15,-25 15,20 40,-25" fill="none" stroke="#2874a6" stroke-width="3"/></g>
+  </g>
+  <g transform="translate(0 660)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">arc · elliptical</text>
+    <path class="edit" d="M30 140 A 70 40 20 0 1 150 120" fill="none" stroke="#117a65" stroke-width="3"/>
+  </g>
+  <g transform="translate(180 660)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">arc · flip the flags</text>
+    <path class="edit" d="M30 130 A 60 60 0 0 1 150 130" fill="none" stroke="#117a65" stroke-width="3"/>
+  </g>
+  <g transform="translate(360 660)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">pie slice (L + A + Z)</text>
+    <path class="edit" d="M90 110 L 90 50 A 60 60 0 0 1 148 126 Z" fill="#d1f2eb" stroke="#117a65" stroke-width="3" stroke-linejoin="round"/>
+  </g>
+  <g transform="translate(540 660)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">rounded shape (4 arcs)</text>
+    <path class="edit" d="M 40 90 A 30 30 0 0 1 70 60 H 110 A 30 30 0 0 1 140 90 V 110 A 30 30 0 0 1 110 140 H 70 A 30 30 0 0 1 40 110 Z" fill="#d1f2eb" stroke="#117a65" stroke-width="3"/>
+  </g>
+</svg>
+
+<ul>
+  <li><b>Path:</b> drag square nodes and round bezier handles. Hold <kbd>Shift</kbd> on a cubic handle to mirror its partner. Double-click the path to add a node; double-click a node to delete it. Arcs have their own handles (below).</li>
+  <li><b>Arcs</b> (<code>A</code> segments in a path): click an arc's end node or its dot to activate it and show its ellipse. The square on the x-axis sets <code>rx</code> and rotation; the square on the y-axis sets <code>ry</code>; hold <kbd>Shift</kbd> to keep it circular. Drag the round dot on the arc across the chord to flip the large-arc/sweep flags.</li>
+  <li><b>Rect:</b> eight square handles resize (drag past the opposite edge to flip); the centre dot moves it.</li>
+  <li><b>Circle / ellipse:</b> centre dot moves; square handles set the radius (<code>rx</code>/<code>ry</code> for the ellipse).</li>
+  <li><b>Line:</b> drag either endpoint; the midpoint dot moves the whole line.</li>
+  <li><b>Polygon / polyline:</b> drag vertex squares; the centre dot moves the whole shape. Double-click an edge to add a vertex, double-click a vertex to delete it (minimum 3 for a polygon, 2 for a polyline).</li>
+  <li>Undo/redo: Ctrl/Cmd+Z, Shift+Ctrl/Cmd+Z (or Ctrl+Y). A whole drag is one step.</li>
+</ul>
+
+<script src="../dist/sable-edit.js"></script>
+<script>
+  const ed = SableEdit.attach(document.getElementById('art'), { selector: '.edit' });
+  const $ = id => document.getElementById(id), out = $('readout');
+  ed.on('select', el => out.textContent = el ? '<' + el.tagName + '> selected' : 'nothing selected');
+  ed.on('change', ({el, attr}) => out.textContent = '<' + el.tagName + '> ' + attr + '="' + el.getAttribute(attr) + '"');
+  const sync = () => { $('undo').disabled = !ed.canUndo; $('redo').disabled = !ed.canRedo; };
+  ed.on('history', sync); sync();
+  $('undo').onclick = () => ed.undo(); $('redo').onclick = () => ed.redo();
+</script>
+</body></html>
