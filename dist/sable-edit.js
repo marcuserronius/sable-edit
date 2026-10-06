@@ -3,11 +3,24 @@
   Options: root (limit editable subtree), overlay (existing <g> to draw handles in), mode ('scale'|'rotate'|'edit', default 'scale'),
            pick (default true: click an element to select it, click empty space to deselect),
            selector (editable elements, default basic shapes + path + text),
-           onSelect(el), onChange(el, attr, src)
+           onSelect(el), onChange(el, attr, src), onCreate(el),
+           createIn (element or selector: where new shapes go, default root), shapeAttrs (attributes for new shapes, default a light
+           fill + 2px stroke; if you pass `selector`, include something in shapeAttrs that matches it, e.g. {class:'edit'}),
+           menu (default true: right-click / Ctrl-click opens the context menu; false leaves the browser's menu alone)
   Instance: select(el|null), selected, refresh() (call after you pan/zoom), changed(el, attr),
             set(el, attr, val, src) (undoable write; val null removes the attribute), undo(), redo(), clearHistory(),
             canUndo/canRedo, mode (get/set), modes (what the selected shape offers), cycleMode(),
-            on('select'|'change'|'history'|'mode', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
+            tool (get/set: 'pointer' or a tool id, stays until changed), useTool(id) (one use, then back to 'pointer'), tools (what is registered),
+            openMenu(x,y), closeMenu(), addMenu(({x,y,target,editor}) => [items]) (returns a remover),
+            on('select'|'change'|'history'|'mode'|'tool'|'create'|'remove', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
+  Context menu: right-click (Ctrl-click on a Mac) anywhere on the canvas. 'Use Once' arms a tool for one shape, then returns to the pointer;
+    'Switch Tool' keeps the tool until you pick Pointer (or press Esc). Items are {label, action, checked, disabled, submenu:[...]} or {sep:1}.
+  Tools:    the pointer tool is the editing behaviour described below; other tools create shapes. Built in: circle (press = centre, drag = radius),
+            rect (press = one corner, release = the opposite corner, any direction).
+            A tool is armed -> every press is its gesture (nothing is selected, handles and the hub stay out of the way); Esc cancels a drag.
+            A created shape is one undo step. A one-use tool selects the new shape; a switched-to tool stays armed with nothing selected.
+            SableEdit.tools.register({id, label, cursor, begin(t, p0, ev) -> {move(p,ev), end(p,ev) -> element|null, cancel?()}})
+            t = {host, px(n), make(tag, attrs)}; points are in the createIn container's coordinates.
   Widgets:  SableEdit.widgets.register(el=>bool, ctx=>({update(),destroy()}))   (a widget is a shape's *edit mode*)
             ctx = { el, overlay, matrix(), px(n), toLocal(pointerEvent), toParent(pointerEvent), toOverlay(pointerEvent),
                     bbox(), set(attr,val), on(evt,fn) }
@@ -47,6 +60,7 @@ var SableEdit = (() => {
   var index_exports = {};
   __export(index_exports, {
     attach: () => attach,
+    tools: () => Tools,
     widgets: () => Widgets
   });
 
@@ -786,6 +800,58 @@ var SableEdit = (() => {
     } };
   }, { generic: true });
 
+  // src/tools.js
+  var Tools = {
+    list: [],
+    register(def) {
+      const i = this.list.findIndex((d) => d.id === def.id);
+      i < 0 ? this.list.push(def) : this.list[i] = def;
+    },
+    get(id) {
+      return this.list.find((d) => d.id === id);
+    }
+  };
+
+  // src/tools/circle.js
+  var circleFrom = (c, p, min = 0) => {
+    const r = Math.hypot(p[0] - c[0], p[1] - c[1]);
+    return r > min ? { cx: rnd(c[0]), cy: rnd(c[1]), r: rnd(r) } : null;
+  };
+  Tools.register({ id: "circle", label: "Circle", cursor: "crosshair", begin(t, p0) {
+    const el = t.make("circle", { cx: rnd(p0[0]), cy: rnd(p0[1]), r: 0 }), put = (c) => {
+      for (const k in c) el.setAttribute(k, c[k]);
+    };
+    return { move: (p) => {
+      const c = circleFrom(p0, p);
+      c && put(c);
+    }, end: (p) => {
+      const c = circleFrom(p0, p, t.px(2));
+      if (!c) return null;
+      put(c);
+      return el;
+    } };
+  } });
+
+  // src/tools/rect.js
+  var rectFrom = (a, b, min = 0) => {
+    const w = Math.abs(b[0] - a[0]), h = Math.abs(b[1] - a[1]);
+    return w > min && h > min ? { x: rnd(Math.min(a[0], b[0])), y: rnd(Math.min(a[1], b[1])), width: rnd(w), height: rnd(h) } : null;
+  };
+  Tools.register({ id: "rect", label: "Rectangle", cursor: "crosshair", begin(t, p0) {
+    const el = t.make("rect", { x: rnd(p0[0]), y: rnd(p0[1]), width: 0, height: 0 }), put = (c) => {
+      for (const k in c) el.setAttribute(k, c[k]);
+    };
+    return { move: (p) => {
+      const c = rectFrom(p0, p);
+      c && put(c);
+    }, end: (p) => {
+      const c = rectFrom(p0, p, t.px(2));
+      if (!c) return null;
+      put(c);
+      return el;
+    } };
+  } });
+
   // src/xform.js
   var ownM = (el) => {
     let m = new DOMMatrix();
@@ -938,8 +1004,8 @@ var SableEdit = (() => {
         const v = s.role === "sc" || s.role === "rot" ? [x - C[0], y - C[1]] : s.role === "sx" || s.role === "kx" ? [M.a, M.b] : [M.c, M.d], a = Math.atan2(v[1], v[0]);
         A2(s.g, { transform: `translate(${x} ${y}) rotate(${a * 180 / Math.PI}) scale(${ctx.px(1)})` });
         s.g.style.cursor = s.role === "rot" ? "grab" : cursor(a);
-        const e = 1e-9, live = { sc: b.w > e || b.h > e, sx: b.w > e, sy: b.h > e, rot: true, kx: b.h > e, ky: b.w > e }[s.role];
-        s.g.style.display = live ? "" : "none";
+        const e = 1e-9, live2 = { sc: b.w > e || b.h > e, sx: b.w > e, sy: b.h > e, rot: true, kx: b.h > e, ky: b.w > e }[s.role];
+        s.g.style.display = live2 ? "" : "none";
       });
     }
     ctx.on("view", () => !dead && layout());
@@ -1033,6 +1099,153 @@ var SableEdit = (() => {
     } };
   }
 
+  // src/menu.js
+  var placeMenu = (x, y, w, h, vw, vh, pad = 4) => ({ left: x + w + pad > vw ? Math.max(pad, x - w) : x, top: y + h + pad > vh ? Math.max(pad, vh - h - pad) : y });
+  var placeSub = (r, w, h, vw, vh, pad = 4) => ({ left: Math.max(pad, r.right + w + pad > vw ? r.left - w : r.right), top: r.top + h + pad > vh ? Math.max(pad, vh - h - pad) : r.top });
+  var CSS = "position:fixed;left:0;top:0;visibility:hidden;z-index:2147483000;min-width:150px;padding:4px 0;margin:0;background:var(--panel,#fff);color:#222;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.22);font:13px/1.4 system-ui,sans-serif;user-select:none;-webkit-user-select:none";
+  var live = null;
+  function openMenu(items, x, y, onClose) {
+    live && live.close();
+    const doc = document, panels = [];
+    let closed = false;
+    const lit = (row, on) => {
+      row.el.style.background = on ? "var(--acc,#2f6fed)" : "";
+      row.el.style.color = on ? "#fff" : "";
+    };
+    const focus = (p, i) => {
+      if (p.sel >= 0) lit(p.rows[p.sel], false);
+      p.sel = i;
+      if (i >= 0) lit(p.rows[i], true);
+    };
+    const trim = (n) => {
+      while (panels.length > n) panels.pop().el.remove();
+    };
+    function build(list, at) {
+      const el = doc.createElement("div");
+      el.setAttribute("role", "menu");
+      el.style.cssText = CSS;
+      const p = { el, rows: [], sel: -1 };
+      list.forEach((it) => {
+        if (it.sep) {
+          const s = doc.createElement("div");
+          s.setAttribute("role", "separator");
+          s.style.cssText = "height:1px;margin:4px 0;background:#ddd";
+          el.append(s);
+          return;
+        }
+        const r = doc.createElement("div"), ck = doc.createElement("span"), lb = doc.createElement("span");
+        r.setAttribute("role", "menuitem");
+        if (it.disabled) r.setAttribute("aria-disabled", "true");
+        r.style.cssText = "display:flex;align-items:center;gap:8px;padding:4px 14px 4px 8px;cursor:default;white-space:nowrap" + (it.disabled ? ";opacity:.45" : "");
+        ck.style.cssText = "width:14px;text-align:center";
+        ck.textContent = it.checked ? "\u2713" : "";
+        lb.style.flex = "1";
+        lb.textContent = it.label;
+        r.append(ck, lb);
+        if (it.submenu) {
+          const a = doc.createElement("span");
+          a.textContent = "\u25B8";
+          a.style.marginLeft = "12px";
+          r.append(a);
+          r.setAttribute("aria-haspopup", "true");
+        }
+        const row = { el: r, it };
+        p.rows.push(row);
+        el.append(r);
+        r.addEventListener("mouseenter", () => enter(p, row));
+        r.addEventListener("click", (e) => {
+          e.stopPropagation();
+          activate(p, row);
+        });
+      });
+      doc.body.append(el);
+      const b = el.getBoundingClientRect(), q = at(b.width, b.height, doc.documentElement.clientWidth, doc.documentElement.clientHeight);
+      el.style.left = q.left + "px";
+      el.style.top = q.top + "px";
+      el.style.visibility = "";
+      panels.push(p);
+      return p;
+    }
+    function openSub(p, row, first) {
+      trim(panels.indexOf(p) + 1);
+      const l = row.it.submenu, list = typeof l === "function" ? l() : l, r = row.el.getBoundingClientRect();
+      const sp = build(list, (w, h, vw, vh) => placeSub(r, w, h, vw, vh));
+      if (first) {
+        const i = sp.rows.findIndex((q) => !q.it.disabled);
+        i >= 0 && focus(sp, i);
+      }
+    }
+    function enter(p, row) {
+      trim(panels.indexOf(p) + 1);
+      if (row.it.disabled) {
+        focus(p, -1);
+        return;
+      }
+      focus(p, p.rows.indexOf(row));
+      if (row.it.submenu) openSub(p, row, false);
+    }
+    function activate(p, row, viaKey) {
+      if (row.it.disabled) return;
+      if (row.it.submenu) {
+        openSub(p, row, viaKey);
+        return;
+      }
+      close();
+      row.it.action && row.it.action();
+    }
+    const key = (e) => {
+      const p = panels[panels.length - 1], k = e.key, r = p.rows[p.sel];
+      const move = (d) => {
+        const en = p.rows.map((_, i) => i).filter((i) => !p.rows[i].it.disabled);
+        if (!en.length) return;
+        const at = en.indexOf(p.sel);
+        focus(p, en[at < 0 ? d > 0 ? 0 : en.length - 1 : (at + d + en.length) % en.length]);
+      };
+      if (k === "ArrowDown") move(1);
+      else if (k === "ArrowUp") move(-1);
+      else if (k === "ArrowRight") {
+        if (r && r.it.submenu) openSub(p, r, true);
+      } else if (k === "Enter" || k === " ") {
+        if (r) activate(p, r, true);
+      } else if (k === "ArrowLeft") {
+        if (panels.length < 2) return;
+        trim(panels.length - 1);
+      } else if (k === "Escape") {
+        panels.length > 1 ? trim(panels.length - 1) : close();
+      } else return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+    const down = (e) => {
+      if (!panels.some((p) => p.el.contains(e.target))) close();
+    };
+    const ctx = (e) => {
+      if (panels.some((p) => p.el.contains(e.target))) e.preventDefault();
+    };
+    doc.addEventListener("keydown", key, true);
+    doc.addEventListener("pointerdown", down, true);
+    doc.addEventListener("contextmenu", ctx, true);
+    addEventListener("blur", close);
+    addEventListener("resize", close);
+    addEventListener("scroll", close, true);
+    function close() {
+      if (closed) return;
+      closed = true;
+      trim(0);
+      doc.removeEventListener("keydown", key, true);
+      doc.removeEventListener("pointerdown", down, true);
+      doc.removeEventListener("contextmenu", ctx, true);
+      removeEventListener("blur", close);
+      removeEventListener("resize", close);
+      removeEventListener("scroll", close, true);
+      if (live === ctl) live = null;
+      onClose && onClose();
+    }
+    const ctl = live = { close };
+    build(items, (w, h, vw, vh) => placeMenu(x, y, w, h, vw, vh));
+    return ctl;
+  }
+
   // src/attach.js
   var MODES = ["scale", "rotate", "edit"];
   function attach(svg, opts = {}) {
@@ -1046,8 +1259,10 @@ var SableEdit = (() => {
       (hs[e] ??= []).push(f2);
     }, emit = (e, d) => [...hs[e] || []].forEach((f2) => f2(d));
     if (opts.onSelect) on("select", opts.onSelect);
+    if (opts.onCreate) on("create", (d) => opts.onCreate(d.el));
     if (opts.onChange) on("change", (d) => opts.onChange(d.el, d.attr, d.src));
     let sel = null, layer = null, hub = null, subs = [], pref = MODES.includes(opts.mode) ? opts.mode : "scale";
+    let tool = "pointer", oneShot = false, gesture = null, swallow = false, menuCtl = null;
     const undoS = [], redoS = [];
     let gid = 0;
     const record = (el, attr, old, nw, src) => {
@@ -1067,10 +1282,21 @@ var SableEdit = (() => {
       record(el, attr, old, nw, src);
       emit("change", { el, attr, src });
     };
+    const stepAdd = (i, dir) => {
+      if (dir > 0) {
+        i.parent.insertBefore(i.el, i.next && i.next.parentNode === i.parent ? i.next : null);
+        emit("create", { el: i.el, src: "history" });
+      } else {
+        if (sel === i.el) select(null);
+        i.el.remove();
+        emit("remove", { el: i.el, src: "history" });
+      }
+    };
     const step = (from, to, dir) => {
       const g = from.pop();
       if (!g) return;
       (dir > 0 ? g.items : [...g.items].reverse()).forEach((i) => {
+        if (i.add) return stepAdd(i, dir);
         const v = dir > 0 ? i.nw : i.old;
         v === null ? i.el.removeAttribute(i.attr) : i.el.setAttribute(i.attr, v);
         emit("change", { el: i.el, attr: i.attr, src: "history" });
@@ -1089,6 +1315,10 @@ var SableEdit = (() => {
     const onKey = (e) => {
       const t = document.activeElement;
       if (/INPUT|TEXTAREA|SELECT/.test(t?.tagName) || t?.isContentEditable) return;
+      if (e.key === "Escape") {
+        if (!gesture && tool !== "pointer") setTool("pointer");
+        return;
+      }
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
       if (k === "z") {
@@ -1181,11 +1411,148 @@ var SableEdit = (() => {
       emit("select", el);
     }
     const onClick = (e) => {
-      if (ov.contains(e.target)) return;
+      if (swallow) {
+        swallow = false;
+        return;
+      }
+      if (ov.contains(e.target) || ctxClick(e)) return;
       const t = e.target.closest?.(PRIM);
       select(t && root.contains(t) ? t : null);
     };
     if (opts.pick !== false) svg.addEventListener("click", onClick);
+    const isMac = () => /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "");
+    const ctxClick = (e) => e.button === 2 || e.button === 0 && e.ctrlKey && isMac();
+    const cursorWas = svg.style.cursor;
+    const hostEl = () => {
+      const c = opts.createIn;
+      return (typeof c === "string" ? svg.querySelector(c) : c) || root;
+    };
+    const shapeAttrs = () => ({ fill: "#d6eaf8", stroke: "#2874a6", "stroke-width": 2, ...opts.shapeAttrs });
+    function setTool(id, once = false) {
+      if (gesture) return;
+      const T = Tools.get(id);
+      if (id !== "pointer" && !T) return;
+      once = once && id !== "pointer";
+      if (id === tool && once === oneShot) return;
+      tool = id;
+      oneShot = once;
+      svg.style.cursor = T ? T.cursor || "crosshair" : cursorWas;
+      if (T) select(null);
+      emit("tool", id);
+    }
+    function commit(el) {
+      undoS.push({ key: "add:" + ++gid, t: Date.now(), items: [{ add: 1, el, parent: el.parentNode, next: el.nextSibling }] });
+      redoS.length = 0;
+      emit("history");
+      emit("create", { el, src: "tool" });
+      if (oneShot) {
+        setTool("pointer");
+        select(el);
+      }
+    }
+    function toolDown(e) {
+      if (ctxClick(e)) {
+        e.stopPropagation();
+        return;
+      }
+      if (tool === "pointer" || e.button !== 0 || gesture) return;
+      const T = Tools.get(tool), host = hostEl(), M = host.getScreenCTM();
+      if (!T || !M) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const inv = M.inverse(), sc = Math.hypot(M.a, M.b) || 1, made = [], id = e.pointerId, g = gesture = { dead: false };
+      const pt = (ev) => {
+        const q = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(inv);
+        return [q.x, q.y];
+      };
+      const G = T.begin({ host, px: (n) => n / sc, make(tag, a) {
+        const el = mk(tag, { ...shapeAttrs(), ...a });
+        host.insertBefore(el, host === ov.parentNode ? ov : null);
+        made.push(el);
+        return el;
+      } }, pt(e), e);
+      svg.setPointerCapture(id);
+      const kill = () => {
+        if (g.dead) return;
+        g.dead = true;
+        G.cancel && G.cancel();
+        made.forEach((x) => x.remove());
+      };
+      const mv = (ev) => {
+        if (ev.pointerId === id && !g.dead) G.move(pt(ev), ev);
+      };
+      const esc = (ev) => {
+        if (ev.key === "Escape") kill();
+      };
+      const stop = () => {
+        svg.removeEventListener("pointermove", mv);
+        svg.removeEventListener("pointerup", up);
+        svg.removeEventListener("pointercancel", cancel);
+        removeEventListener("keydown", esc, true);
+        gesture = null;
+        swallow = true;
+        setTimeout(() => {
+          swallow = false;
+        });
+      };
+      const up = (ev) => {
+        if (ev.pointerId !== id) return;
+        stop();
+        if (g.dead) return;
+        const el = G.end(pt(ev), ev);
+        made.forEach((x) => x !== el && x.remove());
+        if (el) commit(el);
+      };
+      const cancel = (ev) => {
+        if (ev.pointerId !== id) return;
+        kill();
+        stop();
+      };
+      svg.addEventListener("pointermove", mv);
+      svg.addEventListener("pointerup", up);
+      svg.addEventListener("pointercancel", cancel);
+      addEventListener("keydown", esc, true);
+    }
+    const menuB = [];
+    const toolItems = () => {
+      const ts = Tools.list;
+      if (!ts.length) return [];
+      return [
+        { label: "Use Once", submenu: ts.map((d) => ({ label: d.label, checked: oneShot && tool === d.id, action: () => setTool(d.id, true) })) },
+        { label: "Switch Tool", submenu: [
+          { label: "Pointer", checked: tool === "pointer", action: () => setTool("pointer") },
+          ...ts.map((d) => ({ label: d.label, checked: !oneShot && tool === d.id, action: () => setTool(d.id) }))
+        ] }
+      ];
+    };
+    menuB.push(toolItems);
+    const closeMenu = () => {
+      menuCtl && menuCtl.close();
+      menuCtl = null;
+    };
+    function openMenu2(x, y, target = null) {
+      const items = [];
+      menuB.forEach((f2) => {
+        const l = f2({ x, y, target, editor: api }) || [];
+        if (l.length) {
+          items.length && items.push({ sep: 1 });
+          items.push(...l);
+        }
+      });
+      if (!items.length) return false;
+      closeMenu();
+      menuCtl = openMenu(items, x, y, () => {
+        menuCtl = null;
+      });
+      return true;
+    }
+    const onCtx = (e) => {
+      if (opts.menu === false || gesture) return;
+      const t = ov.contains(e.target) ? null : e.target.closest?.(PRIM);
+      if (openMenu2(e.clientX, e.clientY, t && root.contains(t) ? t : null)) e.preventDefault();
+    };
+    svg.addEventListener("pointerdown", toolDown, true);
+    svg.addEventListener("contextmenu", onCtx);
     const api = {
       select,
       set: setAttr,
@@ -1209,7 +1576,11 @@ var SableEdit = (() => {
         emit("change", { el, attr, src });
       },
       destroy() {
+        closeMenu();
+        setTool("pointer");
         select(null);
+        svg.removeEventListener("pointerdown", toolDown, true);
+        svg.removeEventListener("contextmenu", onCtx);
         svg.removeEventListener("click", onClick);
         svg.removeEventListener("pointerdown", onDown, true);
         removeEventListener("keydown", onKey);
@@ -1227,6 +1598,27 @@ var SableEdit = (() => {
       },
       get modes() {
         return sel ? modesFor(sel) : MODES;
+      },
+      get tool() {
+        return tool;
+      },
+      set tool(id) {
+        setTool(id);
+      },
+      useTool(id) {
+        setTool(id, true);
+      },
+      get tools() {
+        return Tools.list.map(({ id, label }) => ({ id, label }));
+      },
+      openMenu: openMenu2,
+      closeMenu,
+      addMenu(f2) {
+        menuB.push(f2);
+        return () => {
+          const i = menuB.indexOf(f2);
+          i >= 0 && menuB.splice(i, 1);
+        };
       },
       cycleMode() {
         if (!sel) return;

@@ -3,11 +3,25 @@
   Options: root (limit editable subtree), overlay (existing <g> to draw handles in), mode ('scale'|'rotate'|'edit', default 'scale'),
            pick (default true: click an element to select it, click empty space to deselect),
            selector (editable elements, default basic shapes + path + text),
-           onSelect(el), onChange(el, attr, src)
+           onSelect(el), onChange(el, attr, src), onCreate(el),
+           createIn (element or selector: where new shapes go, default root), shapeAttrs (attributes for new shapes, default a light
+           fill + 2px stroke; if you pass `selector`, include something in shapeAttrs that matches it, e.g. {class:'edit'}),
+           menu (default true: right-click / Ctrl-click opens the context menu; false leaves the browser's menu alone)
   Instance: select(el|null), selected, refresh() (call after you pan/zoom), changed(el, attr),
             set(el, attr, val, src) (undoable write; val null removes the attribute), undo(), redo(), clearHistory(),
             canUndo/canRedo, mode (get/set), modes (what the selected shape offers), cycleMode(),
-            on('select'|'change'|'history'|'mode', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
+            tool (get/set: 'pointer' or a tool id, stays until changed), useTool(id) (one use, then back to 'pointer'), tools (what is registered),
+            openMenu(x,y), closeMenu(), addMenu(({x,y,target,editor}) => [items]) (returns a remover),
+            on('select'|'change'|'history'|'mode'|'tool'|'create'|'remove', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
+  Context menu: right-click (Ctrl-click on a Mac) anywhere on the canvas. 'Use Once' arms a tool for one shape, then returns to the pointer;
+    'Switch Tool' keeps the tool until you pick Pointer (or press Esc). Items are {label, action, checked, disabled, submenu:[...]} or {sep:1}.
+  Tools:    the pointer tool is the editing behaviour described below; other tools create shapes. Built in: circle (press = centre, drag = radius),
+            rect (press = one corner, release = the opposite corner, any direction), ellipse (the same two corners, of its bounding box),
+            line (press = start point, release = end point).
+            A tool is armed -> every press is its gesture (nothing is selected, handles and the hub stay out of the way); Esc cancels a drag.
+            A created shape is one undo step. A one-use tool selects the new shape; a switched-to tool stays armed with nothing selected.
+            SableEdit.tools.register({id, label, cursor, begin(t, p0, ev) -> {move(p,ev), end(p,ev) -> element|null, cancel?()}})
+            t = {host, px(n), make(tag, attrs)}; points are in the createIn container's coordinates.
   Widgets:  SableEdit.widgets.register(el=>bool, ctx=>({update(),destroy()}))   (a widget is a shape's *edit mode*)
             ctx = { el, overlay, matrix(), px(n), toLocal(pointerEvent), toParent(pointerEvent), toOverlay(pointerEvent),
                     bbox(), set(attr,val), on(evt,fn) }

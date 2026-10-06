@@ -11,15 +11,16 @@
   #readout{margin-left:auto;font:12px ui-monospace,Menlo,monospace;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   svg{width:100%;height:auto;display:block;border:1px solid #ddd;border-radius:8px;background:#fff;touch-action:none}
   svg text:not(.edit){font:12px system-ui,sans-serif;fill:#666;pointer-events:none}
-  #mode{font:12px ui-monospace,Menlo,monospace;color:#2f6fed;border:1px solid #2f6fed;border-radius:99px;padding:1px 10px;white-space:nowrap}
+  #mode,#tool{font:12px ui-monospace,Menlo,monospace;color:#2f6fed;border:1px solid #2f6fed;border-radius:99px;padding:1px 10px;white-space:nowrap}
   ul{margin:16px 0 0;padding-left:20px;font-size:14px}
 </style></head>
 <body>
 <h1>SableEdit demo</h1>
 <div>Click any shape to edit it. Click empty space to deselect. Every shape here is a live element; edits write straight to its attributes. The <b>hub</b> in the middle of the selected shape drags to move it and <b>clicks (or taps) to switch mode</b>.</div>
-<div id="bar"><button id="undo">Undo</button><button id="redo">Redo</button><span id="mode">mode: -</span><span id="readout">nothing selected</span></div>
+<div id="bar"><button id="undo">Undo</button><button id="redo">Redo</button><span id="mode">mode: -</span><span id="tool">tool: pointer</span><span id="readout">nothing selected</span></div>
 
-<svg id="art" viewBox="0 0 720 1100">
+<svg id="art" viewBox="0 0 720 1700">
+  <defs><pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0H0V20" fill="none" stroke="#eee"/></pattern></defs>
   <g transform="translate(0 0)">
     <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
     <text x="90" y="24" text-anchor="middle">path · cubic</text>
@@ -110,9 +111,13 @@
     <text x="90" y="24" text-anchor="middle">rect (no transform)</text>
     <rect class="edit" id="plain-rect" x="30" y="70" width="120" height="80" fill="#d6eaf8" stroke="#2874a6" stroke-width="3"/>
   </g>
+  <rect id="canvas" x="4" y="1104" width="712" height="592" rx="8" fill="url(#grid)" stroke="#e0e0e0"/>
+  <text x="360" y="1126" text-anchor="middle">free drawing &middot; right-click for tools (Switch Tool &rsaquo; Circle, Rectangle, Ellipse or Line), then drag</text>
+  <g id="sketch"></g>
 </svg>
 
 <ul>
+  <li><b>Tools &amp; context menu:</b> right-click (or Ctrl-click on a Mac) anywhere on the canvas. <b>Use Once</b> arms a tool for a single shape and then returns to the pointer; <b>Switch Tool</b> keeps it until you pick Pointer again (or press <kbd>Esc</kbd>). <b>Circle:</b> press for the centre, drag out to the radius, release. <b>Rectangle:</b> press one corner, release on the opposite one (any direction). <b>Ellipse:</b> the same two corners, of its bounding box. <b>Line:</b> press the start, release at the end. <kbd>Esc</kbd> during a drag cancels it. Shapes you draw land in the free-drawing area at the bottom and are editable like any other; creating one is a single undo step.</li>
   <li><b>Path:</b> drag square nodes and round bezier handles. Hold <kbd>Shift</kbd> on a cubic handle to mirror its partner. Double-click the path to add a node; double-click a node to delete it. Arcs have their own handles (below).</li>
   <li><b>Arcs</b> (<code>A</code> segments in a path): click an arc's end node to show its ellipse (dashed) and handles. The two <b>squares</b> are the start and end nodes. The <b>dots</b> each do one job: the one on the dotted x-axis sets <code>rx</code>, the one on the dotted y-axis sets <code>ry</code> (hold <kbd>Shift</kbd> to keep it circular), the <b>hollow ring</b> opposite the x dot only rotates (<kbd>Shift</kbd> snaps to 15&deg;), and the dot sitting on the arc flips it: drag it to the side, or the dashed part of the ellipse, where you want the arc.</li>
   <li><b>Modes.</b> Every selected shape has a <b>hub</b> (the big dot with the move arrows) at the centre of its bounding box, in every mode. <b>Drag it</b> to move the shape; <b>click or tap it</b> to go to the next mode: <b>scale</b> &rarr; <b>rotate/skew</b> &rarr; <b>edit</b> (three pips under the hub show where you are). Shapes with no editor of their own, like text, only cycle the first two. Your last mode is kept when you select another shape.</li>
@@ -128,11 +133,13 @@
 
 <script src="../dist/sable-edit.js"></script>
 <script>
-  const ed = SableEdit.attach(document.getElementById('art'), { selector: '.edit' });
+  const ed = SableEdit.attach(document.getElementById('art'), { selector: '.edit', createIn: '#sketch', shapeAttrs: { class: 'edit' } });
   const $ = id => document.getElementById(id), out = $('readout');
   const modeEl = $('mode'), showMode = () => modeEl.textContent = 'mode: ' + (ed.selected ? ed.mode : '-');
   ed.on('select', el => { out.textContent = el ? '<' + el.tagName + '> selected' : 'nothing selected'; showMode(); });
   ed.on('mode', showMode);
+  ed.on('tool', t => $('tool').textContent = 'tool: ' + t);
+  ed.on('create', ({ el }) => out.textContent = '<' + el.tagName + '> created');
   ed.on('change', ({el, attr}) => out.textContent = '<' + el.tagName + '> ' + attr + '="' + el.getAttribute(attr) + '"');
   const sync = () => { $('undo').disabled = !ed.canUndo; $('redo').disabled = !ed.canRedo; };
   ed.on('history', sync); sync();
