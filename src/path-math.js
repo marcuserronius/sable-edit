@@ -28,6 +28,8 @@ export function parsePath(d){
   }
   return out;
 }
+/* segments -> d string (inverse of parsePath, 3-decimal rounding) */
+export const serPath=segs=>segs.map(s=>s.t==='Z'?'Z':s.t+(s.arc?s.arc.join(' ')+' ':'')+s.pts.flat().map(v=>+v.toFixed(3)).join(' ')).join(' ');
 /* SVG arc endpoint -> centre parameterization (SVG spec F.6.5). Returns null for degenerate arcs. */
 export function arcGeom(p,e,rx,ry,deg,fa,fs){
   rx=Math.abs(rx);ry=Math.abs(ry);if(!rx||!ry||(p[0]===e[0]&&p[1]===e[1]))return null;

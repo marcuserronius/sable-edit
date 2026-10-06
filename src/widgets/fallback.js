@@ -12,4 +12,4 @@ Widgets.register(()=>true,ctx=>{
   }
   ctx.on('view',update); ctx.on('change',update); update();
   return {update,destroy(){g.remove()}};
-});
+},{generic:true});

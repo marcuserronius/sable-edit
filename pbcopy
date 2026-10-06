@@ -1,0 +1,157 @@
+npm notice run sable-edit@0.1.0 test:e2e
+npm notice run npm run build && playwright test
+npm notice run sable-edit@0.1.0 build
+npm notice run node scripts/build.js
+built dist/
+[WebServer] npm notice run sable-edit@0.1.0 npx
+[WebServer] npm notice run 'serve' . -l 8080
+
+Running 9 tests using 1 worker
+
+  ✘  1 test/e2e/demo.spec.js:3:1 › demo loads and exposes the API (2ms)
+  ✘  2 test/e2e/demo.spec.js:11:1 › selecting a rect shows handles; undo restores edits (3ms)
+  ✘  3 test/e2e/demo.spec.js:26:1 › clicking empty space deselects (3ms)
+  ✘  4 test/e2e/demo.spec.js:47:1 › the hub cycles scale -> rotate -> edit -> scale on click (3ms)
+  ✘  5 test/e2e/demo.spec.js:57:1 › shapes with no editor of their own (text) only cycle scale <-> rotate (1ms)
+  ✘  6 test/e2e/demo.spec.js:65:1 › scale: an edge handle resizes along its axis, the opposite edge stays, and undo is one step (1ms)
+  ✘  7 test/e2e/demo.spec.js:79:1 › rotate mode: a corner follows the pointer angle about the centre; edge handles skew (1ms)
+  ✘  8 test/e2e/demo.spec.js:92:1 › hub drag moves a rect by rewriting x/y, not transform; undo restores (1ms)
+  ✘  9 test/e2e/demo.spec.js:103:1 › rect edit mode: corner-radius handle sits on the corner at 0 and its inset offsets are rx and ry (1ms)
+
+
+  1) test/e2e/demo.spec.js:3:1 › demo loads and exposes the API ────────────────────────────────────
+
+    Error: browserType.launch: Executable doesn't exist at /Users/mark/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell
+    ╔════════════════════════════════════════════════════════════╗
+    ║ Looks like Playwright was just installed or updated.       ║
+    ║ Please run the following command to download new browsers: ║
+    ║                                                            ║
+    ║     npx playwright install                                 ║
+    ║                                                            ║
+    ║ <3 Playwright Team                                         ║
+    ╚════════════════════════════════════════════════════════════╝
+
+    Error Context: test-results/demo-demo-loads-and-exposes-the-API/error-context.md
+
+  2) test/e2e/demo.spec.js:11:1 › selecting a rect shows handles; undo restores edits ──────────────
+
+    Error: browserType.launch: Executable doesn't exist at /Users/mark/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell
+    ╔════════════════════════════════════════════════════════════╗
+    ║ Looks like Playwright was just installed or updated.       ║
+    ║ Please run the following command to download new browsers: ║
+    ║                                                            ║
+    ║     npx playwright install                                 ║
+    ║                                                            ║
+    ║ <3 Playwright Team                                         ║
+    ╚════════════════════════════════════════════════════════════╝
+
+    Error Context: test-results/demo-selecting-a-rect-shows-handles-undo-restores-edits/error-context.md
+
+  3) test/e2e/demo.spec.js:26:1 › clicking empty space deselects ───────────────────────────────────
+
+    Error: browserType.launch: Executable doesn't exist at /Users/mark/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell
+    ╔════════════════════════════════════════════════════════════╗
+    ║ Looks like Playwright was just installed or updated.       ║
+    ║ Please run the following command to download new browsers: ║
+    ║                                                            ║
+    ║     npx playwright install                                 ║
+    ║                                                            ║
+    ║ <3 Playwright Team                                         ║
+    ╚════════════════════════════════════════════════════════════╝
+
+    Error Context: test-results/demo-clicking-empty-space-deselects/error-context.md
+
+  4) test/e2e/demo.spec.js:47:1 › the hub cycles scale -> rotate -> edit -> scale on click ─────────
+
+    Error: browserType.launch: Executable doesn't exist at /Users/mark/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell
+    ╔════════════════════════════════════════════════════════════╗
+    ║ Looks like Playwright was just installed or updated.       ║
+    ║ Please run the following command to download new browsers: ║
+    ║                                                            ║
+    ║     npx playwright install                                 ║
+    ║                                                            ║
+    ║ <3 Playwright Team                                         ║
+    ╚════════════════════════════════════════════════════════════╝
+
+    Error Context: test-results/demo-the-hub-cycles-scale---rotate---edit---scale-on-click/error-context.md
+
+  5) test/e2e/demo.spec.js:57:1 › shapes with no editor of their own (text) only cycle scale <-> rotate 
+
+    Error: browserType.launch: Executable doesn't exist at /Users/mark/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell
+    ╔════════════════════════════════════════════════════════════╗
+    ║ Looks like Playwright was just installed or updated.       ║
+    ║ Please run the following command to download new browsers: ║
+    ║                                                            ║
+    ║     npx playwright install                                 ║
+    ║                                                            ║
+    ║ <3 Playwright Team                                         ║
+    ╚════════════════════════════════════════════════════════════╝
+
+    Error Context: test-results/demo-shapes-with-no-editor-58349-t-only-cycle-scale---rotate/error-context.md
+
+  6) test/e2e/demo.spec.js:65:1 › scale: an edge handle resizes along its axis, the opposite edge stays, and undo is one step 
+
+    Error: browserType.launch: Executable doesn't exist at /Users/mark/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell
+    ╔════════════════════════════════════════════════════════════╗
+    ║ Looks like Playwright was just installed or updated.       ║
+    ║ Please run the following command to download new browsers: ║
+    ║                                                            ║
+    ║     npx playwright install                                 ║
+    ║                                                            ║
+    ║ <3 Playwright Team                                         ║
+    ╚════════════════════════════════════════════════════════════╝
+
+    Error Context: test-results/demo-scale-an-edge-handle--a408d--stays-and-undo-is-one-step/error-context.md
+
+  7) test/e2e/demo.spec.js:79:1 › rotate mode: a corner follows the pointer angle about the centre; edge handles skew 
+
+    Error: browserType.launch: Executable doesn't exist at /Users/mark/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell
+    ╔════════════════════════════════════════════════════════════╗
+    ║ Looks like Playwright was just installed or updated.       ║
+    ║ Please run the following command to download new browsers: ║
+    ║                                                            ║
+    ║     npx playwright install                                 ║
+    ║                                                            ║
+    ║ <3 Playwright Team                                         ║
+    ╚════════════════════════════════════════════════════════════╝
+
+    Error Context: test-results/demo-rotate-mode-a-corner--13517-he-centre-edge-handles-skew/error-context.md
+
+  8) test/e2e/demo.spec.js:92:1 › hub drag moves a rect by rewriting x/y, not transform; undo restores 
+
+    Error: browserType.launch: Executable doesn't exist at /Users/mark/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell
+    ╔════════════════════════════════════════════════════════════╗
+    ║ Looks like Playwright was just installed or updated.       ║
+    ║ Please run the following command to download new browsers: ║
+    ║                                                            ║
+    ║     npx playwright install                                 ║
+    ║                                                            ║
+    ║ <3 Playwright Team                                         ║
+    ╚════════════════════════════════════════════════════════════╝
+
+    Error Context: test-results/demo-hub-drag-moves-a-rect-13afa-not-transform-undo-restores/error-context.md
+
+  9) test/e2e/demo.spec.js:103:1 › rect edit mode: corner-radius handle sits on the corner at 0 and its inset offsets are rx and ry 
+
+    Error: browserType.launch: Executable doesn't exist at /Users/mark/Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell
+    ╔════════════════════════════════════════════════════════════╗
+    ║ Looks like Playwright was just installed or updated.       ║
+    ║ Please run the following command to download new browsers: ║
+    ║                                                            ║
+    ║     npx playwright install                                 ║
+    ║                                                            ║
+    ║ <3 Playwright Team                                         ║
+    ╚════════════════════════════════════════════════════════════╝
+
+    Error Context: test-results/demo-rect-edit-mode-corner-6b176-inset-offsets-are-rx-and-ry/error-context.md
+
+  9 failed
+    test/e2e/demo.spec.js:3:1 › demo loads and exposes the API ─────────────────────────────────────
+    test/e2e/demo.spec.js:11:1 › selecting a rect shows handles; undo restores edits ───────────────
+    test/e2e/demo.spec.js:26:1 › clicking empty space deselects ────────────────────────────────────
+    test/e2e/demo.spec.js:47:1 › the hub cycles scale -> rotate -> edit -> scale on click ──────────
+    test/e2e/demo.spec.js:57:1 › shapes with no editor of their own (text) only cycle scale <-> rotate 
+    test/e2e/demo.spec.js:65:1 › scale: an edge handle resizes along its axis, the opposite edge stays, and undo is one step 
+    test/e2e/demo.spec.js:79:1 › rotate mode: a corner follows the pointer angle about the centre; edge handles skew 
+    test/e2e/demo.spec.js:92:1 › hub drag moves a rect by rewriting x/y, not transform; undo restores 
+    test/e2e/demo.spec.js:103:1 › rect edit mode: corner-radius handle sits on the corner at 0 and its inset offsets are rx and ry 

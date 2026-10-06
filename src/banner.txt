@@ -1,17 +1,26 @@
 /*! SableEdit (sable-edit.js) — drop-in SVG element editor (paths first). No dependencies.
   Usage:  const ed = SableEdit.attach(svgElement, { onChange(el,attr){...} });
-  Options: root (limit editable subtree), overlay (existing <g> to draw handles in),
+  Options: root (limit editable subtree), overlay (existing <g> to draw handles in), mode ('scale'|'rotate'|'edit', default 'scale'),
            pick (default true: click an element to select it, click empty space to deselect),
            selector (editable elements, default basic shapes + path + text),
            onSelect(el), onChange(el, attr, src)
   Instance: select(el|null), selected, refresh() (call after you pan/zoom), changed(el, attr),
-            set(el, attr, val, src) (undoable write), undo(), redo(), clearHistory(), canUndo/canRedo,
-            on('select'|'change'|'history', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
-  Widgets:  SableEdit.widgets.register(el=>bool, ctx=>({update(),destroy()}))
-            ctx = { el, overlay, matrix(), px(n), toLocal(pointerEvent), set(attr,val), on(evt,fn) }
+            set(el, attr, val, src) (undoable write; val null removes the attribute), undo(), redo(), clearHistory(),
+            canUndo/canRedo, mode (get/set), modes (what the selected shape offers), cycleMode(),
+            on('select'|'change'|'history'|'mode', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
+  Widgets:  SableEdit.widgets.register(el=>bool, ctx=>({update(),destroy()}))   (a widget is a shape's *edit mode*)
+            ctx = { el, overlay, matrix(), px(n), toLocal(pointerEvent), toParent(pointerEvent), toOverlay(pointerEvent),
+                    bbox(), set(attr,val), on(evt,fn) }
   Handles are drawn in the overlay in the same space as the document, so editing happens in place.
-  Widgets: path, rect, circle, ellipse, line, polygon, polyline. Path editing: drag nodes/handles, Shift mirrors a cubic handle, double-click path = add node,
-  double-click node = delete.
+  Modes: a selected shape has a hub (marked dot at the centre of its bounding box) in every mode: drag = move, click/tap = next mode.
+    scale        bounding box in the shape's own frame; edge handles resize one axis, corners resize proportionally (opposite side fixed)
+    rotate/skew  corners rotate about the centre (Shift = 15 degree steps), edge midpoints skew parallel to their edge
+    edit         the shape's own controls (the registered widget). Shapes with only the catch-all widget (text...) skip this mode.
+  Scale and rotate/skew work on any element by writing `transform` (compacted to translate/scale/rotate/matrix when a gesture ends).
+  The hub rewrites rect/circle/ellipse/line/polygon/polyline/path coordinates directly and falls back to `transform` for the rest.
+  Edit widgets: path, rect, circle, ellipse, line, polygon, polyline. Path editing: drag nodes/handles, Shift mirrors a cubic handle,
+  double-click path = add node, double-click node = delete.
+  Rect: two corner nodes (x1,y1 / x2,y2) and one corner-radius dot, inset from a free corner by (rx,ry); Shift = circular.
   Arcs: the active arc (click its end node or dot) shows its ellipse; the x-axis handle sets rx + rotation,
   the y-axis handle sets ry (Shift = circular); drag the dot across the chord to flip large-arc/sweep.
   The first edit normalizes `d` to absolute M/L/C/Q/A/Z. */

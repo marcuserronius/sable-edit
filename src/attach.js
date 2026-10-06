@@ -1,11 +1,15 @@
 import {Widgets} from './registry.js';
 import {mk} from './dom.js';
+import {ownM} from './xform.js';
+import {transformLayer} from './widgets/transform.js';
+import {hubWidget} from './widgets/hub.js';
+const MODES=['scale','rotate','edit'];
 export function attach(svg,opts={}){
   const PRIM=opts.selector||'path,rect,circle,ellipse,line,polyline,polygon,text', root=opts.root||svg;
   let ov=opts.overlay; if(!ov){ov=mk('g',{style:'pointer-events:none'});svg.append(ov)}
-  const hs={}, on=(e,f)=>{(hs[e]??=[]).push(f)}, emit=(e,d)=>(hs[e]||[]).forEach(f=>f(d));
+  const hs={}, on=(e,f)=>{(hs[e]??=[]).push(f)}, emit=(e,d)=>[...(hs[e]||[])].forEach(f=>f(d));
   if(opts.onSelect)on('select',opts.onSelect); if(opts.onChange)on('change',d=>opts.onChange(d.el,d.attr,d.src));
-  let sel=null,widget=null;
+  let sel=null,layer=null,hub=null,subs=[],pref=MODES.includes(opts.mode)?opts.mode:'scale';
 
   /* undo/redo: edits made in one pointer gesture (or one burst of typing) form one step */
   const undoS=[],redoS=[]; let gid=0;
@@ -16,9 +20,9 @@ export function attach(svg,opts={}){
     }else undoS.push({key,t:now,items:[{el,attr,old,nw}]});
     redoS.length=0;emit('history');
   };
-  const setAttr=(el,attr,v,src='app')=>{
-    const old=el.getAttribute(attr);if(old===String(v))return;
-    el.setAttribute(attr,v);record(el,attr,old,String(v),src);emit('change',{el,attr,src});
+  const setAttr=(el,attr,v,src='app')=>{ // v === null removes the attribute
+    const old=el.getAttribute(attr),nw=v===null?null:String(v);if(old===nw)return;
+    nw===null?el.removeAttribute(attr):el.setAttribute(attr,nw);record(el,attr,old,nw,src);emit('change',{el,attr,src});
   };
   const step=(from,to,dir)=>{
     const g=from.pop();if(!g)return;
@@ -39,21 +43,42 @@ export function attach(svg,opts={}){
   svg.addEventListener('pointerdown',onDown,true);
   if(opts.keys!==false)addEventListener('keydown',onKey);
   const scale=()=>{const m=ov.getScreenCTM();return m?Math.hypot(m.a,m.b)||1:1};
-  const matrixFor=el=>ov.getCTM().inverse().multiply(el.getCTM());
+  const dm=m=>new DOMMatrix([m.a,m.b,m.c,m.d,m.e,m.f]),matrixFor=el=>dm(ov.getCTM().inverse().multiply(el.getCTM())); // DOMMatrix, so it composes with ownM()
+  /* Edit modes. Every shape cycles scale -> rotate/skew -> edit; shapes with no editor of their own
+     (only the catch-all fallback matches) cycle scale <-> rotate. `pref` is the user's last choice and is
+     kept across selections; `cur()` is what the selected shape can actually show. */
+  const modesFor=el=>{const e=Widgets.find(el);return e&&!e.generic?MODES:MODES.slice(0,2)};
+  const cur=()=>{const ms=modesFor(sel);return ms.includes(pref)?pref:ms[0]};
+  const unsub=()=>{subs.forEach(([e,f])=>{const a=hs[e],i=a?a.indexOf(f):-1;if(i>=0)a.splice(i,1)});subs=[]};
+  const teardown=()=>{layer?.destroy();hub?.destroy();layer=hub=null;unsub();ov.replaceChildren()};
+  let ctx=null;
+  function build(){
+    teardown();const m=cur(),ms=modesFor(sel);
+    layer=m==='edit'?Widgets.find(sel).factory(ctx):transformLayer(ctx,m);
+    hub=hubWidget(ctx,{modes:ms,index:ms.indexOf(m),cycle:()=>api.cycleMode(),moved:()=>layer.update&&layer.update()});
+  }
   function select(el){
     if(el===sel)return;
-    widget?.destroy();widget=null;ov.replaceChildren();sel=el;
+    teardown();sel=el;ctx=null;
     if(el){
-      const ctx={el,overlay:ov,on,matrix:()=>matrixFor(el),px:n=>n/scale(),
-        toLocal(e){const q=new DOMPoint(e.clientX,e.clientY).matrixTransform(ov.getScreenCTM().inverse()).matrixTransform(matrixFor(el).inverse());return [q.x,q.y]},
+      const toOverlay=e=>{const q=new DOMPoint(e.clientX,e.clientY).matrixTransform(ov.getScreenCTM().inverse());return [q.x,q.y]};
+      ctx={el,overlay:ov,on:(e,f)=>{on(e,f);subs.push([e,f])},matrix:()=>matrixFor(el),px:n=>n/scale(),toOverlay,
+        toLocal(e){const o=toOverlay(e),q=new DOMPoint(o[0],o[1]).matrixTransform(matrixFor(el).inverse());return [q.x,q.y]},
+        /* pointer in the parent's coordinate system: what the element's own `transform` is relative to */
+        toParent(e){const o=toOverlay(e),q=new DOMPoint(o[0],o[1]).matrixTransform(matrixFor(el).multiply(ownM(el).inverse()).inverse());return [q.x,q.y]},
+        bbox(){try{const b=el.getBBox();return {x:b.x,y:b.y,w:b.width,h:b.height}}catch{return null}},
         set(a,v,src='widget'){setAttr(el,a,v,src)}};
-      widget=Widgets.find(el).factory(ctx);
+      build();
     }
     emit('select',el);
   }
   const onClick=e=>{if(ov.contains(e.target))return;const t=e.target.closest?.(PRIM);select(t&&root.contains(t)?t:null)};
   if(opts.pick!==false)svg.addEventListener('click',onClick);
-  return {select,set:setAttr,undo,redo,clearHistory,get canUndo(){return undoS.length>0},get canRedo(){return redoS.length>0},get selected(){return sel},on,
+  const api={select,set:setAttr,undo,redo,clearHistory,get canUndo(){return undoS.length>0},get canRedo(){return redoS.length>0},get selected(){return sel},on,
     refresh(){emit('view')}, changed(el,attr,src='app'){emit('change',{el,attr,src})},
-    destroy(){select(null);svg.removeEventListener('click',onClick);svg.removeEventListener('pointerdown',onDown,true);removeEventListener('keydown',onKey);if(!opts.overlay)ov.remove()}};
+    destroy(){select(null);svg.removeEventListener('click',onClick);svg.removeEventListener('pointerdown',onDown,true);removeEventListener('keydown',onKey);if(!opts.overlay)ov.remove()},
+    get mode(){return sel?cur():pref},set mode(m){if(!MODES.includes(m)||m===api.mode)return;pref=m;if(sel&&cur()!==m)return;sel&&build();emit('mode',m)},
+    get modes(){return sel?modesFor(sel):MODES},
+    cycleMode(){if(!sel)return;const ms=modesFor(sel);pref=ms[(ms.indexOf(cur())+1)%ms.length];build();emit('mode',pref)}};
+  return api;
 }

@@ -10,15 +10,16 @@
   button:disabled{opacity:.45;cursor:default}
   #readout{margin-left:auto;font:12px ui-monospace,Menlo,monospace;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   svg{width:100%;height:auto;display:block;border:1px solid #ddd;border-radius:8px;background:#fff;touch-action:none}
-  svg text{font:12px system-ui,sans-serif;fill:#666;pointer-events:none}
+  svg text:not(.edit){font:12px system-ui,sans-serif;fill:#666;pointer-events:none}
+  #mode{font:12px ui-monospace,Menlo,monospace;color:#2f6fed;border:1px solid #2f6fed;border-radius:99px;padding:1px 10px;white-space:nowrap}
   ul{margin:16px 0 0;padding-left:20px;font-size:14px}
 </style></head>
 <body>
 <h1>SableEdit demo</h1>
-<div>Click any shape to edit it. Click empty space to deselect. Every shape here is a live element; edits write straight to its attributes.</div>
-<div id="bar"><button id="undo">Undo</button><button id="redo">Redo</button><span id="readout">nothing selected</span></div>
+<div>Click any shape to edit it. Click empty space to deselect. Every shape here is a live element; edits write straight to its attributes. The <b>hub</b> in the middle of the selected shape drags to move it and <b>clicks (or taps) to switch mode</b>.</div>
+<div id="bar"><button id="undo">Undo</button><button id="redo">Redo</button><span id="mode">mode: -</span><span id="readout">nothing selected</span></div>
 
-<svg id="art" viewBox="0 0 720 880">
+<svg id="art" viewBox="0 0 720 1100">
   <g transform="translate(0 0)">
     <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
     <text x="90" y="24" text-anchor="middle">path · cubic</text>
@@ -42,7 +43,7 @@
   <g transform="translate(0 220)">
     <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
     <text x="90" y="24" text-anchor="middle">rect (rotated)</text>
-    <rect class="edit" x="30" y="60" width="120" height="80" fill="#fcf3cf" stroke="#b7950b" stroke-width="3" transform="rotate(10 90 100)"/>
+    <rect class="edit" x="30" y="60" width="120" height="80" rx="14" fill="#fcf3cf" stroke="#b7950b" stroke-width="3" transform="rotate(10 90 100)"/>
   </g>
   <g transform="translate(180 220)">
     <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
@@ -99,15 +100,29 @@
     <text x="90" y="24" text-anchor="middle">rounded shape (4 arcs)</text>
     <path class="edit" d="M 40 90 A 30 30 0 0 1 70 60 H 110 A 30 30 0 0 1 140 90 V 110 A 30 30 0 0 1 110 140 H 70 A 30 30 0 0 1 40 110 Z" fill="#d1f2eb" stroke="#117a65" stroke-width="3"/>
   </g>
+  <g transform="translate(0 880)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">text (scale / rotate only)</text>
+    <text class="edit" x="22" y="125" fill="#2c3e50" style="font:700 40px system-ui,sans-serif">Sable</text>
+  </g>
+  <g transform="translate(180 880)">
+    <rect x="4" y="4" width="172" height="212" rx="8" fill="#fafafa" stroke="#e0e0e0"/>
+    <text x="90" y="24" text-anchor="middle">rect (no transform)</text>
+    <rect class="edit" id="plain-rect" x="30" y="70" width="120" height="80" fill="#d6eaf8" stroke="#2874a6" stroke-width="3"/>
+  </g>
 </svg>
 
 <ul>
   <li><b>Path:</b> drag square nodes and round bezier handles. Hold <kbd>Shift</kbd> on a cubic handle to mirror its partner. Double-click the path to add a node; double-click a node to delete it. Arcs have their own handles (below).</li>
   <li><b>Arcs</b> (<code>A</code> segments in a path): click an arc's end node to show its ellipse (dashed) and handles. The two <b>squares</b> are the start and end nodes. The <b>dots</b> each do one job: the one on the dotted x-axis sets <code>rx</code>, the one on the dotted y-axis sets <code>ry</code> (hold <kbd>Shift</kbd> to keep it circular), the <b>hollow ring</b> opposite the x dot only rotates (<kbd>Shift</kbd> snaps to 15&deg;), and the dot sitting on the arc flips it: drag it to the side, or the dashed part of the ellipse, where you want the arc.</li>
-  <li><b>Rect:</b> eight square handles resize (drag past the opposite edge to flip); the centre dot moves it.</li>
-  <li><b>Circle / ellipse:</b> centre dot moves; square handles set the radius (<code>rx</code>/<code>ry</code> for the ellipse).</li>
-  <li><b>Line:</b> drag either endpoint; the midpoint dot moves the whole line.</li>
-  <li><b>Polygon / polyline:</b> drag vertex squares; the centre dot moves the whole shape. Double-click an edge to add a vertex, double-click a vertex to delete it (minimum 3 for a polygon, 2 for a polyline).</li>
+  <li><b>Modes.</b> Every selected shape has a <b>hub</b> (the big dot with the move arrows) at the centre of its bounding box, in every mode. <b>Drag it</b> to move the shape; <b>click or tap it</b> to go to the next mode: <b>scale</b> &rarr; <b>rotate/skew</b> &rarr; <b>edit</b> (three pips under the hub show where you are). Shapes with no editor of their own, like text, only cycle the first two. Your last mode is kept when you select another shape.</li>
+  <li><b>Scale:</b> the dashed box is the shape's own bounding box, drawn in the shape's own (possibly rotated) frame. Edge handles resize along their arrow, with the opposite edge held fixed; corner handles resize proportionally along the diagonal. Dragging past the opposite side flips the shape. Written to <code>transform</code>.</li>
+  <li><b>Rotate / skew:</b> the bent arrows at the corners rotate about the box centre (<kbd>Shift</kbd> snaps to 15&deg;). The straight arrows at the edge midpoints skew parallel to their edge, with the opposite edge held fixed. Written to <code>transform</code>.</li>
+  <li><b>Rect (edit):</b> two square nodes are opposite corners (<code>x1,y1</code> and <code>x2,y2</code>); drag one past the other and it keeps tracking. The dot on a free corner is the <b>corner radius</b>: it sits on the corner at radius 0 and moves into the rectangle, so its offsets are the radii (10 in, 30 down means <code>rx=10 ry=30</code>). <kbd>Shift</kbd> makes it circular. The dotted box shows the radii.</li>
+  <li><b>Circle / ellipse (edit):</b> square handles set the radius (<code>rx</code>/<code>ry</code> for the ellipse).</li>
+  <li><b>Line (edit):</b> drag either endpoint.</li>
+  <li><b>Polygon / polyline (edit):</b> drag vertex squares. Double-click an edge to add a vertex, double-click a vertex to delete it (minimum 3 for a polygon, 2 for a polyline).</li>
+  <li>The hub moves rect, circle, ellipse, line, polygon, polyline and path by rewriting their own coordinates; anything else (text) gets a <code>translate()</code> in <code>transform</code>.</li>
   <li>Undo/redo: Ctrl/Cmd+Z, Shift+Ctrl/Cmd+Z (or Ctrl+Y). A whole drag is one step.</li>
 </ul>
 
@@ -115,7 +130,9 @@
 <script>
   const ed = SableEdit.attach(document.getElementById('art'), { selector: '.edit' });
   const $ = id => document.getElementById(id), out = $('readout');
-  ed.on('select', el => out.textContent = el ? '<' + el.tagName + '> selected' : 'nothing selected');
+  const modeEl = $('mode'), showMode = () => modeEl.textContent = 'mode: ' + (ed.selected ? ed.mode : '-');
+  ed.on('select', el => { out.textContent = el ? '<' + el.tagName + '> selected' : 'nothing selected'; showMode(); });
+  ed.on('mode', showMode);
   ed.on('change', ({el, attr}) => out.textContent = '<' + el.tagName + '> ' + attr + '="' + el.getAttribute(attr) + '"');
   const sync = () => { $('undo').disabled = !ed.canUndo; $('redo').disabled = !ed.canRedo; };
   ed.on('history', sync); sync();

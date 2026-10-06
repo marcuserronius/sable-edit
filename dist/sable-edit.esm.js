@@ -1,17 +1,26 @@
 /*! SableEdit (sable-edit.js) — drop-in SVG element editor (paths first). No dependencies.
   Usage:  const ed = SableEdit.attach(svgElement, { onChange(el,attr){...} });
-  Options: root (limit editable subtree), overlay (existing <g> to draw handles in),
+  Options: root (limit editable subtree), overlay (existing <g> to draw handles in), mode ('scale'|'rotate'|'edit', default 'scale'),
            pick (default true: click an element to select it, click empty space to deselect),
            selector (editable elements, default basic shapes + path + text),
            onSelect(el), onChange(el, attr, src)
   Instance: select(el|null), selected, refresh() (call after you pan/zoom), changed(el, attr),
-            set(el, attr, val, src) (undoable write), undo(), redo(), clearHistory(), canUndo/canRedo,
-            on('select'|'change'|'history', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
-  Widgets:  SableEdit.widgets.register(el=>bool, ctx=>({update(),destroy()}))
-            ctx = { el, overlay, matrix(), px(n), toLocal(pointerEvent), set(attr,val), on(evt,fn) }
+            set(el, attr, val, src) (undoable write; val null removes the attribute), undo(), redo(), clearHistory(),
+            canUndo/canRedo, mode (get/set), modes (what the selected shape offers), cycleMode(),
+            on('select'|'change'|'history'|'mode', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
+  Widgets:  SableEdit.widgets.register(el=>bool, ctx=>({update(),destroy()}))   (a widget is a shape's *edit mode*)
+            ctx = { el, overlay, matrix(), px(n), toLocal(pointerEvent), toParent(pointerEvent), toOverlay(pointerEvent),
+                    bbox(), set(attr,val), on(evt,fn) }
   Handles are drawn in the overlay in the same space as the document, so editing happens in place.
-  Widgets: path, rect, circle, ellipse, line, polygon, polyline. Path editing: drag nodes/handles, Shift mirrors a cubic handle, double-click path = add node,
-  double-click node = delete.
+  Modes: a selected shape has a hub (marked dot at the centre of its bounding box) in every mode: drag = move, click/tap = next mode.
+    scale        bounding box in the shape's own frame; edge handles resize one axis, corners resize proportionally (opposite side fixed)
+    rotate/skew  corners rotate about the centre (Shift = 15 degree steps), edge midpoints skew parallel to their edge
+    edit         the shape's own controls (the registered widget). Shapes with only the catch-all widget (text...) skip this mode.
+  Scale and rotate/skew work on any element by writing `transform` (compacted to translate/scale/rotate/matrix when a gesture ends).
+  The hub rewrites rect/circle/ellipse/line/polygon/polyline/path coordinates directly and falls back to `transform` for the rest.
+  Edit widgets: path, rect, circle, ellipse, line, polygon, polyline. Path editing: drag nodes/handles, Shift mirrors a cubic handle,
+  double-click path = add node, double-click node = delete.
+  Rect: two corner nodes (x1,y1 / x2,y2) and one corner-radius dot, inset from a free corner by (rx,ry); Shift = circular.
   Arcs: the active arc (click its end node or dot) shows its ellipse; the x-axis handle sets rx + rotation,
   the y-axis handle sets ry (Shift = circular); drag the dot across the chord to flip large-arc/sweep.
   The first edit normalizes `d` to absolute M/L/C/Q/A/Z. */
@@ -19,8 +28,8 @@
 // src/registry.js
 var Widgets = {
   list: [],
-  register(match, factory) {
-    this.list.push({ match, factory });
+  register(match, factory, opts) {
+    this.list.push({ match, factory, ...opts });
   },
   find(el) {
     return this.list.find((w) => w.match(el));
@@ -39,14 +48,14 @@ var mk = (n, a = {}) => {
 var lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 var dc = (p, t) => p.length === 1 ? p[0] : dc(p.slice(1).map((q, k) => lerp(p[k], q, t)), t);
 var split = (p, t) => {
-  const L = [], R = [];
+  const L = [], R2 = [];
   let q = p;
   while (q.length) {
     L.push(q[0]);
-    R.unshift(q.at(-1));
+    R2.unshift(q.at(-1));
     q = q.slice(1).map((v, k) => lerp(q[k], v, t));
   }
-  return [L, R];
+  return [L, R2];
 };
 var NARGS = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0 };
 function parsePath(d) {
@@ -128,6 +137,7 @@ function parsePath(d) {
   }
   return out;
 }
+var serPath = (segs) => segs.map((s) => s.t === "Z" ? "Z" : s.t + (s.arc ? s.arc.join(" ") + " " : "") + s.pts.flat().map((v) => +v.toFixed(3)).join(" ")).join(" ");
 function arcGeom(p, e, rx, ry, deg, fa, fs) {
   rx = Math.abs(rx);
   ry = Math.abs(ry);
@@ -198,9 +208,9 @@ function arcFit(P, E, arc, kind, p, opts = {}) {
       const hi = 50 * (Math.hypot(E[0] - P[0], E[1] - P[1]) + t0 + tmin), N = 160, k = Math.pow(hi / tmin, 1 / N);
       let best = null, prev = { t: tmin, f: res(tmin) };
       for (let n = 1, t = tmin * k; n <= N; n++, t *= k) {
-        const f = res(t);
-        if (isNaN(f)) continue;
-        if (prev.f < 0 !== f < 0) {
+        const f2 = res(t);
+        if (isNaN(f2)) continue;
+        if (prev.f < 0 !== f2 < 0) {
           let a = prev.t, b = t, fa_ = prev.f;
           for (let m = 0; m < 40; m++) {
             const mid = (a + b) / 2, fm = res(mid);
@@ -212,7 +222,7 @@ function arcFit(P, E, arc, kind, p, opts = {}) {
           const r = (a + b) / 2;
           if (best === null || Math.abs(r - t0) < Math.abs(best - t0)) best = r;
         }
-        prev = { t, f };
+        prev = { t, f: f2 };
       }
       v = best ?? hi;
     }
@@ -228,10 +238,10 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
   const el = ctx.el, g = mk("g");
   ctx.overlay.append(g);
   let segs = parsePath(el.getAttribute("d") || ""), items = [], lines = [], hit, gh, dead = false, mv0 = false, mv1 = false, act = -1, arcs = [];
-  const f = (v) => +v.toFixed(3), A = (e, o) => {
+  const f2 = (v) => +v.toFixed(3), A2 = (e, o) => {
     for (const k in o) e.setAttribute(k, o[k]);
   };
-  const ser = () => segs.map((s) => s.t === "Z" ? "Z" : s.t + (s.arc ? s.arc.join(" ") + " " : "") + s.pts.flat().map(f).join(" ")).join(" ");
+  const ser = () => segs.map((s) => s.t === "Z" ? "Z" : s.t + (s.arc ? s.arc.join(" ") + " " : "") + s.pts.flat().map(f2).join(" ")).join(" ");
   const write = () => ctx.set("d", ser());
   const prevPt = (i) => {
     for (let j = i - 1; j >= 0; j--) if (segs[j].t !== "Z") return segs[j].pts.at(-1);
@@ -316,9 +326,9 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
       }
     });
     if (!best) return;
-    const { i, t, cp } = best, s = segs[i], [L, R] = split(cp, t);
+    const { i, t, cp } = best, s = segs[i], [L, R2] = split(cp, t);
     if (s.t === "Z") segs.splice(i, 0, { t: "L", pts: [L.at(-1)] });
-    else segs.splice(i, 1, { t: s.t, pts: L.slice(1) }, { t: s.t, pts: R.slice(1) });
+    else segs.splice(i, 1, { t: s.t, pts: L.slice(1) }, { t: s.t, pts: R2.slice(1) });
     write();
     build();
   }
@@ -436,25 +446,25 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
       const q = new DOMPoint(p[0], p[1]).matrixTransform(M);
       return [q.x, q.y];
     }, w = ctx.px(1.5);
-    A(hit, { d: ser(), transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
+    A2(hit, { d: ser(), transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
     lines.forEach((l) => {
       const a0 = l.a(), b0 = l.b(), on = a0 && b0 && (l.arc === void 0 || l.arc === act);
       l.el.style.display = on ? "" : "none";
       if (!on) return;
       const a = T(a0), b = T(b0);
-      A(l.el, { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": ctx.px(1), "stroke-dasharray": l.dash ? ctx.px(2) + " " + ctx.px(3) : "none" });
+      A2(l.el, { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": ctx.px(1), "stroke-dasharray": l.dash ? ctx.px(2) + " " + ctx.px(3) : "none" });
     });
     items.forEach((it) => {
       const pt = it.arc !== void 0 && it.arc !== act && !it.always ? null : it.get();
       it.el.style.display = pt ? "" : "none";
       if (!pt) return;
       const [x, y] = T(pt), r = ctx.px(it.r);
-      A(it.el, it.n ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
+      A2(it.el, it.n ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
     });
     arcs.forEach(({ i, ell }) => {
       const q = i === act && geom(i);
       ell.style.display = q ? "" : "none";
-      if (q) A(ell, { rx: q.rx, ry: q.ry, transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f}) translate(${q.cx} ${q.cy}) rotate(${q.phi * 180 / Math.PI})` });
+      if (q) A2(ell, { rx: q.rx, ry: q.ry, transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f}) translate(${q.cx} ${q.cy}) rotate(${q.phi * 180 / Math.PI})` });
     });
   }
   ctx.on("view", () => !dead && layout());
@@ -475,13 +485,12 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
 
 // src/widgets/handle.js
 function handleWidget(ctx, specs, outline) {
-  const g = mk("g"), A = (e, o) => {
+  const g = mk("g"), A2 = (e, o) => {
     for (const k in o) e.setAttribute(k, o[k]);
   };
   ctx.overlay.append(g);
   let dead = false;
-  const ol = outline && mk("polygon", { fill: "none", stroke: "var(--acc,#2f6fed)" });
-  ol && g.append(ol);
+  const ols = [];
   const items = specs.map((sp) => {
     const el = mk(sp.sq ? "rect" : "circle", { style: "pointer-events:all;cursor:move", fill: sp.sq ? "var(--panel,#fff)" : "var(--acc,#2f6fed)", stroke: "var(--acc,#2f6fed)" });
     g.append(el);
@@ -501,10 +510,19 @@ function handleWidget(ctx, specs, outline) {
       const q = new DOMPoint(p[0], p[1]).matrixTransform(M);
       return [q.x, q.y];
     }, w = ctx.px(1.5);
-    if (ol) A(ol, { points: outline().map(T).join(" "), "stroke-width": w, "stroke-dasharray": ctx.px(5) + " " + ctx.px(3) });
+    if (outline) {
+      const o = outline(), polys = Array.isArray(o[0][0]) ? o : [o];
+      polys.forEach((poly, i) => {
+        if (!ols[i]) {
+          ols[i] = mk("polygon", { fill: "none", stroke: "var(--acc,#2f6fed)" });
+          g.insertBefore(ols[i], g.firstChild);
+        }
+        A2(ols[i], { points: poly.map(T).join(" "), "stroke-width": w, "stroke-dasharray": i ? ctx.px(1.5) + " " + ctx.px(2.5) : ctx.px(5) + " " + ctx.px(3) });
+      });
+    }
     items.forEach(({ el, sp }) => {
       const [x, y] = T(sp.get()), r = ctx.px(sp.sq ? 5 : 4.5);
-      A(el, sp.sq ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
+      A2(el, sp.sq ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
     });
   }
   ctx.on("view", () => !dead && layout());
@@ -524,56 +542,83 @@ var box4 = (x, y, w, h) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
 // src/widgets/shapes.js
 Widgets.register((el) => el.tagName === "rect", (ctx) => {
   const el = ctx.el, rect = () => ({ x: num(el, "x"), y: num(el, "y"), w: num(el, "width"), h: num(el, "height") });
-  let r0;
-  const specs = [];
-  for (const iy of [0, 0.5, 1]) for (const ix of [0, 0.5, 1]) {
-    const mid = ix === 0.5 && iy === 0.5;
-    specs.push({ sq: !mid, get: () => {
-      const r = rect();
-      return [r.x + r.w * ix, r.y + r.h * iy];
-    }, start: () => {
-      r0 = rect();
-    }, drag: (p, p0) => {
-      let { x, y, w, h } = r0;
-      if (mid) {
-        x += p[0] - p0[0];
-        y += p[1] - p0[1];
-      } else {
-        if (ix !== 0.5) {
-          const a = ix ? x : x + w;
-          x = Math.min(a, p[0]);
-          w = Math.abs(a - p[0]);
-        }
-        if (iy !== 0.5) {
-          const a = iy ? y : y + h;
-          y = Math.min(a, p[1]);
-          h = Math.abs(a - p[1]);
-        }
+  let A2, B, a0, b0, rr0, busy = false;
+  const fromAB = () => ({ x: Math.min(A2[0], B[0]), y: Math.min(A2[1], B[1]), w: Math.abs(A2[0] - B[0]), h: Math.abs(A2[1] - B[1]) });
+  const sync = () => {
+    if (busy) return;
+    const r = rect(), q = A2 && fromAB();
+    if (!q || Math.abs(q.x - r.x) + Math.abs(q.y - r.y) + Math.abs(q.w - r.w) + Math.abs(q.h - r.h) > 2e-3) {
+      A2 = [r.x, r.y];
+      B = [r.x + r.w, r.y + r.h];
+    }
+  };
+  const write = () => {
+    const q = fromAB();
+    busy = true;
+    try {
+      ctx.set("x", rnd(q.x));
+      ctx.set("y", rnd(q.y));
+      ctx.set("width", rnd(q.w));
+      ctx.set("height", rnd(q.h));
+    } finally {
+      busy = false;
+    }
+  };
+  const radii = () => {
+    const r = rect(), a = parseFloat(el.getAttribute("rx")), b = parseFloat(el.getAttribute("ry")), rx = a >= 0 ? a : b >= 0 ? b : 0, ry = b >= 0 ? b : a >= 0 ? a : 0;
+    return [Math.min(rx, r.w / 2), Math.min(ry, r.h / 2)];
+  };
+  const corner = () => {
+    sync();
+    const r = rect(), ax = A2[0] <= B[0] ? 0 : 1, ay = A2[1] <= B[1] ? 0 : 1, fx = ay ? ax : 1 - ax;
+    return { cx: r.x + r.w * fx, cy: r.y, sx: fx ? -1 : 1 };
+  };
+  const node = (get, set) => ({ sq: 1, get: () => {
+    sync();
+    return get();
+  }, start: () => {
+    sync();
+    a0 = [...A2];
+    b0 = [...B];
+  }, drag: (p, p0) => {
+    set(p[0] - p0[0], p[1] - p0[1]);
+    write();
+  } });
+  const specs = [
+    node(() => A2, (dx, dy) => {
+      A2 = [rnd(a0[0] + dx), rnd(a0[1] + dy)];
+    }),
+    node(() => B, (dx, dy) => {
+      B = [rnd(b0[0] + dx), rnd(b0[1] + dy)];
+    }),
+    {
+      get: () => {
+        const c = corner(), [rx, ry] = radii();
+        return [c.cx + c.sx * rx, c.cy + ry];
+      },
+      start: () => {
+        rr0 = radii();
+      },
+      drag: (p, p0, ev) => {
+        const r = rect(), c = corner();
+        let rx = rr0[0] + (p[0] - p0[0]) * c.sx, ry = rr0[1] + (p[1] - p0[1]);
+        rx = Math.max(0, Math.min(rx, r.w / 2));
+        ry = Math.max(0, Math.min(ry, r.h / 2));
+        if (ev && ev.shiftKey) rx = ry = Math.min((rx + ry) / 2, r.w / 2, r.h / 2);
+        ctx.set("rx", rnd(rx));
+        ctx.set("ry", rnd(ry));
       }
-      ctx.set("x", rnd(x));
-      ctx.set("y", rnd(y));
-      if (!mid) {
-        ctx.set("width", rnd(w));
-        ctx.set("height", rnd(h));
-      }
-    } });
-  }
+    }
+  ];
   return handleWidget(ctx, specs, () => {
-    const r = rect();
-    return box4(r.x, r.y, r.w, r.h);
+    const r = rect(), c = corner(), [rx, ry] = radii();
+    return [box4(r.x, r.y, r.w, r.h), [[c.cx, c.cy], [c.cx + c.sx * rx, c.cy], [c.cx + c.sx * rx, c.cy + ry], [c.cx, c.cy + ry]]];
   });
 });
 for (const tag of ["circle", "ellipse"]) Widgets.register((el) => el.tagName === tag, (ctx) => {
   const el = ctx.el, c = () => [num(el, "cx"), num(el, "cy")], ell = tag === "ellipse";
-  let c0;
   const rx = () => num(el, ell ? "rx" : "r"), ry = () => num(el, ell ? "ry" : "r");
   const specs = [
-    { get: c, start: () => {
-      c0 = c();
-    }, drag: (p, p0) => {
-      ctx.set("cx", rnd(c0[0] + p[0] - p0[0]));
-      ctx.set("cy", rnd(c0[1] + p[1] - p0[1]));
-    } },
     { sq: 1, get: () => [c()[0] + rx(), c()[1]], drag: (p) => ctx.set(ell ? "rx" : "r", rnd(ell ? Math.abs(p[0] - c()[0]) : Math.hypot(p[0] - c()[0], p[1] - c()[1]))) }
   ];
   if (ell) specs.push({ sq: 1, get: () => [c()[0], c()[1] + ry()], drag: (p) => ctx.set("ry", rnd(Math.abs(p[1] - c()[1]))) });
@@ -581,7 +626,6 @@ for (const tag of ["circle", "ellipse"]) Widgets.register((el) => el.tagName ===
 });
 Widgets.register((el) => el.tagName === "line", (ctx) => {
   const el = ctx.el, P = (a, b) => [num(el, a), num(el, b)];
-  let s0;
   return handleWidget(ctx, [
     { sq: 1, get: () => P("x1", "y1"), drag: (p) => {
       ctx.set("x1", rnd(p[0]));
@@ -590,26 +634,13 @@ Widgets.register((el) => el.tagName === "line", (ctx) => {
     { sq: 1, get: () => P("x2", "y2"), drag: (p) => {
       ctx.set("x2", rnd(p[0]));
       ctx.set("y2", rnd(p[1]));
-    } },
-    {
-      get: () => {
-        const a = P("x1", "y1"), b = P("x2", "y2");
-        return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-      },
-      start: () => {
-        s0 = ["x1", "y1", "x2", "y2"].map((k) => num(el, k));
-      },
-      drag: (p, p0) => {
-        const dx = p[0] - p0[0], dy = p[1] - p0[1];
-        ["x1", "y1", "x2", "y2"].forEach((k, i) => ctx.set(k, rnd(s0[i] + (i % 2 ? dy : dx))));
-      }
-    }
+    } }
   ]);
 });
 
 // src/widgets/poly.js
 for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName === tag, (ctx) => {
-  const el = ctx.el, closed = tag === "polygon", g = mk("g"), A = (e, o) => {
+  const el = ctx.el, closed = tag === "polygon", g = mk("g"), A2 = (e, o) => {
     for (const k in o) e.setAttribute(k, o[k]);
   };
   ctx.overlay.append(g);
@@ -620,7 +651,6 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
   };
   let pts = parse(), items = [], hit, dead = false, mv0 = false, mv1 = false;
   const write = () => ctx.set("points", pts.map((p) => rnd(p[0]) + "," + rnd(p[1])).join(" "));
-  const centroid = () => [pts.reduce((s, p) => s + p[0], 0) / pts.length, pts.reduce((s, p) => s + p[1], 0) / pts.length];
   function drag(h, start, move) {
     h.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
@@ -675,17 +705,6 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
         build();
       });
     });
-    if (pts.length) {
-      const c = mk("circle", { style: "pointer-events:all;cursor:move", fill: "var(--acc,#2f6fed)", stroke: "var(--acc,#2f6fed)" });
-      g.append(c);
-      items.push({ h: c, get: centroid, r: 4.5 });
-      let o;
-      drag(c, () => {
-        o = pts.map((q) => [...q]);
-      }, (p, p0) => {
-        pts = o.map((q) => [q[0] + p[0] - p0[0], q[1] + p[1] - p0[1]]);
-      });
-    }
     layout();
   }
   function layout() {
@@ -693,10 +712,10 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
       const q = new DOMPoint(p[0], p[1]).matrixTransform(M);
       return [q.x, q.y];
     }, w = ctx.px(1.5);
-    A(hit, { points: pts.map((p) => p.join(",")).join(" "), transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
+    A2(hit, { points: pts.map((p) => p.join(",")).join(" "), transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
     items.forEach((it) => {
       const [x, y] = T(it.get()), r = ctx.px(it.r);
-      A(it.h, it.n ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
+      A2(it.h, it.n ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
     });
   }
   ctx.on("view", () => !dead && layout());
@@ -740,9 +759,257 @@ Widgets.register(() => true, (ctx) => {
   return { update, destroy() {
     g.remove();
   } };
-});
+}, { generic: true });
+
+// src/xform.js
+var ownM = (el) => {
+  let m = new DOMMatrix();
+  const l = el.transform && el.transform.baseVal;
+  if (l) for (let i = 0; i < l.numberOfItems; i++) {
+    const t = l.getItem(i).matrix;
+    m = m.multiply(new DOMMatrix([t.a, t.b, t.c, t.d, t.e, t.f]));
+  }
+  return m;
+};
+function fmtTransform({ a, b, c, d, e, f: f2 }) {
+  const near = (x, y) => Math.abs(x - y) < 1e-7, r = (v) => +v.toFixed(6), q = (v) => +v.toFixed(3);
+  const tr = Math.abs(e) > 1e-9 || Math.abs(f2) > 1e-9 ? `translate(${q(e)} ${q(f2)})` : "";
+  let rest = "";
+  if (near(b, 0) && near(c, 0)) {
+    if (!(near(a, 1) && near(d, 1))) rest = `scale(${r(a)}${near(a, d) ? "" : " " + r(d)})`;
+  } else if (near(a, d) && near(b, -c) && near(a * a + b * b, 1)) rest = `rotate(${+(Math.atan2(b, a) * 180 / Math.PI).toFixed(4)})`;
+  else return `matrix(${[a, b, c, d].map(r).join(" ")} ${q(e)} ${q(f2)})`;
+  return [tr, rest].filter(Boolean).join(" ") || null;
+}
+
+// src/glyph.js
+var f = (n) => +n.toFixed(2);
+var chev = (x, y, a, s = 2.6, d = 0.7) => {
+  const p = (k) => `${f(x - s * Math.cos(a + k))} ${f(y - s * Math.sin(a + k))}`;
+  return `M${p(d)}L${f(x)} ${f(y)}L${p(-d)}`;
+};
+var LIN = `M-4.6 0H4.6${chev(4.6, 0, 0)}${chev(-4.6, 0, Math.PI)}`;
+var R = 5.6;
+var CX = -3.8;
+var A = 1.2;
+var ex = Math.cos(A) * R + CX;
+var ey = Math.sin(A) * R;
+var ROT = `M${f(ex)} ${f(-ey)}A${R} ${R} 0 0 1 ${f(ex)} ${f(ey)}${chev(ex, ey, A + Math.PI / 2, 2.3, 0.6)}${chev(ex, -ey, -A - Math.PI / 2, 2.3, 0.6)}`;
+var CROSS = `M-5 0H5M0-5V5${chev(5, 0, 0)}${chev(-5, 0, Math.PI)}${chev(0, 5, Math.PI / 2)}${chev(0, -5, -Math.PI / 2)}`;
+
+// src/widgets/transform.js
+var ACC = "var(--acc,#2f6fed)";
+var PANEL = "var(--panel,#fff)";
+var r6 = (v) => +v.toFixed(6);
+var cursor = (a) => ["ew", "nwse", "ns", "nesw"][Math.round((a % Math.PI + Math.PI) % Math.PI / (Math.PI / 4)) % 4] + "-resize";
+var nz = (s) => Math.abs(s) < 1e-3 ? s < 0 ? -1e-3 : 1e-3 : s;
+function transformLayer(ctx, kind) {
+  const el = ctx.el, g = mk("g"), A2 = (e, o) => {
+    for (const k in o) e.setAttribute(k, o[k]);
+  }, ol = mk("polygon", { fill: "none", stroke: ACC });
+  g.append(ol);
+  ctx.overlay.append(g);
+  let dead = false;
+  const frame = (e, hx, hy) => {
+    const inv = ctx.matrix().inverse(), loc = (ev) => {
+      const o = ctx.toOverlay(ev), q = new DOMPoint(o[0], o[1]).matrixTransform(inv);
+      return [q.x, q.y];
+    }, p0 = loc(e);
+    return { b: ctx.bbox(), t0: el.getAttribute("transform") || "", dirty: false, at: (ev) => {
+      const p = loc(ev);
+      return [hx + p[0] - p0[0], hy + p[1] - p0[1]];
+    } };
+  };
+  const put = (S, pre, post) => {
+    ctx.set("transform", [pre, S.t0, post].filter(Boolean).join(" "));
+    S.dirty = true;
+  };
+  const begin = {
+    sc: (ix, iy) => (e) => {
+      const b = ctx.bbox(), hx = b.x + b.w * ix, hy = b.y + b.h * iy, ax = b.x + b.w * (1 - ix), ay = b.y + b.h * (1 - iy), vx = hx - ax, vy = hy - ay, L = vx * vx + vy * vy, S = frame(e, hx, hy);
+      return { S, move: (ev) => {
+        if (L < 1e-12) return;
+        const p = S.at(ev), s = nz(((p[0] - ax) * vx + (p[1] - ay) * vy) / L);
+        put(S, "", `translate(${rnd(ax)} ${rnd(ay)}) scale(${r6(s)}) translate(${rnd(-ax)} ${rnd(-ay)})`);
+      } };
+    },
+    sx: (ix, iy) => (e) => {
+      const b = ctx.bbox(), hx = b.x + b.w * ix, ax = b.x + b.w * (1 - ix), S = frame(e, hx, b.y + b.h / 2);
+      return { S, move: (ev) => {
+        if (Math.abs(hx - ax) < 1e-9) return;
+        const s = nz((S.at(ev)[0] - ax) / (hx - ax));
+        put(S, "", `translate(${rnd(ax)} 0) scale(${r6(s)} 1) translate(${rnd(-ax)} 0)`);
+      } };
+    },
+    sy: (ix, iy) => (e) => {
+      const b = ctx.bbox(), hy = b.y + b.h * iy, ay = b.y + b.h * (1 - iy), S = frame(e, b.x + b.w / 2, hy);
+      return { S, move: (ev) => {
+        if (Math.abs(hy - ay) < 1e-9) return;
+        const s = nz((S.at(ev)[1] - ay) / (hy - ay));
+        put(S, "", `translate(0 ${rnd(ay)}) scale(1 ${r6(s)}) translate(0 ${rnd(-ay)})`);
+      } };
+    },
+    rot: () => (e) => {
+      const M0 = ownM(el), Pinv = ctx.matrix().multiply(M0.inverse()).inverse(), b = ctx.bbox(), c = new DOMPoint(b.x + b.w / 2, b.y + b.h / 2).matrixTransform(M0), par = (ev) => {
+        const o = ctx.toOverlay(ev), q = new DOMPoint(o[0], o[1]).matrixTransform(Pinv);
+        return Math.atan2(q.y - c.y, q.x - c.x);
+      }, a0 = par(e), S = { t0: el.getAttribute("transform") || "", dirty: false };
+      return { S, move: (ev) => {
+        let d = (par(ev) - a0) * 180 / Math.PI;
+        if (ev.shiftKey) d = Math.round(d / 15) * 15;
+        put(S, `rotate(${+d.toFixed(3)} ${rnd(c.x)} ${rnd(c.y)})`, "");
+      } };
+    },
+    kx: (ix, iy) => (e) => {
+      const b = ctx.bbox(), hy = b.y + b.h * iy, ay = b.y + b.h * (1 - iy), d = hy - ay, cx = b.x + b.w / 2, S = frame(e, cx, hy);
+      return { S, move: (ev) => {
+        if (Math.abs(d) < 1e-9) return;
+        const k = (S.at(ev)[0] - cx) / d;
+        put(S, "", `matrix(1 0 ${r6(k)} 1 ${rnd(-k * ay)} 0)`);
+      } };
+    },
+    ky: (ix, iy) => (e) => {
+      const b = ctx.bbox(), hx = b.x + b.w * ix, ax = b.x + b.w * (1 - ix), d = hx - ax, cy = b.y + b.h / 2, S = frame(e, hx, cy);
+      return { S, move: (ev) => {
+        if (Math.abs(d) < 1e-9) return;
+        const k = (S.at(ev)[1] - cy) / d;
+        put(S, "", `matrix(1 ${r6(k)} 0 1 0 ${rnd(-k * ax)})`);
+      } };
+    }
+  };
+  const specs = [];
+  for (const iy of [0, 0.5, 1]) for (const ix of [0, 0.5, 1]) {
+    if (ix === 0.5 && iy === 0.5) continue;
+    const corner = ix !== 0.5 && iy !== 0.5, vert = ix !== 0.5 && iy === 0.5;
+    const role = kind === "scale" ? corner ? "sc" : vert ? "sx" : "sy" : corner ? "rot" : vert ? "ky" : "kx";
+    const h = mk("g", { style: "pointer-events:all" });
+    h.append(mk("circle", { r: 8, fill: PANEL, stroke: ACC, "stroke-width": 1.2 }), mk("path", { d: role === "rot" ? ROT : LIN, fill: "none", stroke: ACC, "stroke-width": 1.4, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+    g.append(h);
+    specs.push({ ix, iy, role, g: h });
+    h.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      h.setPointerCapture(e.pointerId);
+      const G = begin[role](ix, iy)(e);
+      if (!G) return;
+      const mv = (ev) => G.move(ev);
+      h.addEventListener("pointermove", mv);
+      h.addEventListener("pointerup", () => {
+        h.removeEventListener("pointermove", mv);
+        if (G.S.dirty) ctx.set("transform", fmtTransform(ownM(el)));
+      }, { once: true });
+    });
+  }
+  function layout() {
+    const b = ctx.bbox();
+    g.style.display = b ? "" : "none";
+    if (!b) return;
+    const M = ctx.matrix(), T = (x, y) => {
+      const q = new DOMPoint(x, y).matrixTransform(M);
+      return [q.x, q.y];
+    }, C = T(b.x + b.w / 2, b.y + b.h / 2);
+    A2(ol, { points: [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]].map((p) => T(p[0], p[1])).join(" "), "stroke-width": ctx.px(1.5), "stroke-dasharray": ctx.px(5) + " " + ctx.px(3) });
+    specs.forEach((s) => {
+      const [x, y] = T(b.x + b.w * s.ix, b.y + b.h * s.iy);
+      const v = s.role === "sc" || s.role === "rot" ? [x - C[0], y - C[1]] : s.role === "sx" || s.role === "kx" ? [M.a, M.b] : [M.c, M.d], a = Math.atan2(v[1], v[0]);
+      A2(s.g, { transform: `translate(${x} ${y}) rotate(${a * 180 / Math.PI}) scale(${ctx.px(1)})` });
+      s.g.style.cursor = s.role === "rot" ? "grab" : cursor(a);
+      const e = 1e-9, live = { sc: b.w > e || b.h > e, sx: b.w > e, sy: b.h > e, rot: true, kx: b.h > e, ky: b.w > e }[s.role];
+      s.g.style.display = live ? "" : "none";
+    });
+  }
+  ctx.on("view", () => !dead && layout());
+  ctx.on("change", () => !dead && layout());
+  layout();
+  return { update: layout, destroy() {
+    dead = true;
+    g.remove();
+  } };
+}
+
+// src/move.js
+function mover(ctx) {
+  const el = ctx.el, t = el.tagName;
+  const pairs = { rect: [["x", "y"]], circle: [["cx", "cy"]], ellipse: [["cx", "cy"]], line: [["x1", "y1"], ["x2", "y2"]] }[t];
+  if (pairs) {
+    const s = pairs.map((p) => p.map((a) => num(el, a)));
+    return (dx, dy) => pairs.forEach((p, i) => {
+      ctx.set(p[0], rnd(s[i][0] + dx));
+      ctx.set(p[1], rnd(s[i][1] + dy));
+    });
+  }
+  if (t === "polygon" || t === "polyline") {
+    const n = (el.getAttribute("points") || "").match(/[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g) || [], p = [];
+    for (let i = 0; i + 1 < n.length; i += 2) p.push([+n[i], +n[i + 1]]);
+    return (dx, dy) => ctx.set("points", p.map((q) => rnd(q[0] + dx) + "," + rnd(q[1] + dy)).join(" "));
+  }
+  if (t === "path") {
+    const segs = parsePath(el.getAttribute("d") || "");
+    return (dx, dy) => ctx.set("d", serPath(segs.map((s) => ({ ...s, pts: s.pts.map((q) => [q[0] + dx, q[1] + dy]) }))));
+  }
+  return null;
+}
+
+// src/widgets/hub.js
+var ACC2 = "var(--acc,#2f6fed)";
+var PANEL2 = "var(--panel,#fff)";
+function hubWidget(ctx, { modes, index, cycle, moved }) {
+  const el = ctx.el, g = mk("g"), h = mk("g", { style: "pointer-events:all;cursor:move" });
+  let dead = false;
+  const title = mk("title");
+  title.textContent = "Drag to move \xB7 click for the next mode (" + modes[index] + ")";
+  h.append(
+    title,
+    mk("circle", { r: 12, fill: "none", stroke: ACC2, "stroke-width": 1 }),
+    mk("circle", { r: 9, fill: ACC2, stroke: PANEL2, "stroke-width": 1.6 }),
+    mk("path", { d: CROSS, fill: "none", stroke: PANEL2, "stroke-width": 1.3, "stroke-linecap": "round", "stroke-linejoin": "round" })
+  );
+  g.append(h);
+  modes.forEach((_, i) => g.append(mk("circle", { cx: (i - (modes.length - 1) / 2) * 6, cy: 17, r: 2, fill: i === index ? ACC2 : PANEL2, stroke: ACC2, "stroke-width": 1, style: "pointer-events:none" })));
+  ctx.overlay.append(g);
+  function layout() {
+    const b = ctx.bbox();
+    g.style.display = b ? "" : "none";
+    if (!b) return;
+    const q = new DOMPoint(b.x + b.w / 2, b.y + b.h / 2).matrixTransform(ctx.matrix());
+    g.setAttribute("transform", `translate(${q.x} ${q.y}) scale(${ctx.px(1)})`);
+  }
+  h.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    h.setPointerCapture(e.pointerId);
+    const x0 = e.clientX, y0 = e.clientY, t0 = el.getAttribute("transform") || "", mv = mover(ctx), l0 = ctx.toLocal(e), p0 = ctx.toParent(e);
+    let go = false;
+    const move = (ev) => {
+      if (!go) {
+        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) <= 3) return;
+        go = true;
+      }
+      if (mv) {
+        const p = ctx.toLocal(ev);
+        mv(p[0] - l0[0], p[1] - l0[1]);
+      } else {
+        const p = ctx.toParent(ev);
+        ctx.set("transform", `translate(${rnd(p[0] - p0[0])} ${rnd(p[1] - p0[1])})` + (t0 ? " " + t0 : ""));
+      }
+      moved();
+    };
+    h.addEventListener("pointermove", move);
+    h.addEventListener("pointerup", () => {
+      h.removeEventListener("pointermove", move);
+      if (!go) cycle();
+      else if (!mv) ctx.set("transform", fmtTransform(ownM(el)));
+    }, { once: true });
+  });
+  ctx.on("view", () => !dead && layout());
+  ctx.on("change", () => !dead && layout());
+  layout();
+  return { update: layout, destroy() {
+    dead = true;
+    g.remove();
+  } };
+}
 
 // src/attach.js
+var MODES = ["scale", "rotate", "edit"];
 function attach(svg, opts = {}) {
   const PRIM = opts.selector || "path,rect,circle,ellipse,line,polyline,polygon,text", root = opts.root || svg;
   let ov = opts.overlay;
@@ -750,12 +1017,12 @@ function attach(svg, opts = {}) {
     ov = mk("g", { style: "pointer-events:none" });
     svg.append(ov);
   }
-  const hs = {}, on = (e, f) => {
-    (hs[e] ??= []).push(f);
-  }, emit = (e, d) => (hs[e] || []).forEach((f) => f(d));
+  const hs = {}, on = (e, f2) => {
+    (hs[e] ??= []).push(f2);
+  }, emit = (e, d) => [...hs[e] || []].forEach((f2) => f2(d));
   if (opts.onSelect) on("select", opts.onSelect);
   if (opts.onChange) on("change", (d) => opts.onChange(d.el, d.attr, d.src));
-  let sel = null, widget = null;
+  let sel = null, layer = null, hub = null, subs = [], pref = MODES.includes(opts.mode) ? opts.mode : "scale";
   const undoS = [], redoS = [];
   let gid = 0;
   const record = (el, attr, old, nw, src) => {
@@ -769,10 +1036,10 @@ function attach(svg, opts = {}) {
     emit("history");
   };
   const setAttr = (el, attr, v, src = "app") => {
-    const old = el.getAttribute(attr);
-    if (old === String(v)) return;
-    el.setAttribute(attr, v);
-    record(el, attr, old, String(v), src);
+    const old = el.getAttribute(attr), nw = v === null ? null : String(v);
+    if (old === nw) return;
+    nw === null ? el.removeAttribute(attr) : el.setAttribute(attr, nw);
+    record(el, attr, old, nw, src);
     emit("change", { el, attr, src });
   };
   const step = (from, to, dir) => {
@@ -813,29 +1080,78 @@ function attach(svg, opts = {}) {
     const m = ov.getScreenCTM();
     return m ? Math.hypot(m.a, m.b) || 1 : 1;
   };
-  const matrixFor = (el) => ov.getCTM().inverse().multiply(el.getCTM());
+  const dm = (m) => new DOMMatrix([m.a, m.b, m.c, m.d, m.e, m.f]), matrixFor = (el) => dm(ov.getCTM().inverse().multiply(el.getCTM()));
+  const modesFor = (el) => {
+    const e = Widgets.find(el);
+    return e && !e.generic ? MODES : MODES.slice(0, 2);
+  };
+  const cur = () => {
+    const ms = modesFor(sel);
+    return ms.includes(pref) ? pref : ms[0];
+  };
+  const unsub = () => {
+    subs.forEach(([e, f2]) => {
+      const a = hs[e], i = a ? a.indexOf(f2) : -1;
+      if (i >= 0) a.splice(i, 1);
+    });
+    subs = [];
+  };
+  const teardown = () => {
+    layer?.destroy();
+    hub?.destroy();
+    layer = hub = null;
+    unsub();
+    ov.replaceChildren();
+  };
+  let ctx = null;
+  function build() {
+    teardown();
+    const m = cur(), ms = modesFor(sel);
+    layer = m === "edit" ? Widgets.find(sel).factory(ctx) : transformLayer(ctx, m);
+    hub = hubWidget(ctx, { modes: ms, index: ms.indexOf(m), cycle: () => api.cycleMode(), moved: () => layer.update && layer.update() });
+  }
   function select(el) {
     if (el === sel) return;
-    widget?.destroy();
-    widget = null;
-    ov.replaceChildren();
+    teardown();
     sel = el;
+    ctx = null;
     if (el) {
-      const ctx = {
+      const toOverlay = (e) => {
+        const q = new DOMPoint(e.clientX, e.clientY).matrixTransform(ov.getScreenCTM().inverse());
+        return [q.x, q.y];
+      };
+      ctx = {
         el,
         overlay: ov,
-        on,
+        on: (e, f2) => {
+          on(e, f2);
+          subs.push([e, f2]);
+        },
         matrix: () => matrixFor(el),
         px: (n) => n / scale(),
+        toOverlay,
         toLocal(e) {
-          const q = new DOMPoint(e.clientX, e.clientY).matrixTransform(ov.getScreenCTM().inverse()).matrixTransform(matrixFor(el).inverse());
+          const o = toOverlay(e), q = new DOMPoint(o[0], o[1]).matrixTransform(matrixFor(el).inverse());
           return [q.x, q.y];
+        },
+        /* pointer in the parent's coordinate system: what the element's own `transform` is relative to */
+        toParent(e) {
+          const o = toOverlay(e), q = new DOMPoint(o[0], o[1]).matrixTransform(matrixFor(el).multiply(ownM(el).inverse()).inverse());
+          return [q.x, q.y];
+        },
+        bbox() {
+          try {
+            const b = el.getBBox();
+            return { x: b.x, y: b.y, w: b.width, h: b.height };
+          } catch {
+            return null;
+          }
         },
         set(a, v, src = "widget") {
           setAttr(el, a, v, src);
         }
       };
-      widget = Widgets.find(el).factory(ctx);
+      build();
     }
     emit("select", el);
   }
@@ -845,7 +1161,7 @@ function attach(svg, opts = {}) {
     select(t && root.contains(t) ? t : null);
   };
   if (opts.pick !== false) svg.addEventListener("click", onClick);
-  return {
+  const api = {
     select,
     set: setAttr,
     undo,
@@ -873,8 +1189,29 @@ function attach(svg, opts = {}) {
       svg.removeEventListener("pointerdown", onDown, true);
       removeEventListener("keydown", onKey);
       if (!opts.overlay) ov.remove();
+    },
+    get mode() {
+      return sel ? cur() : pref;
+    },
+    set mode(m) {
+      if (!MODES.includes(m) || m === api.mode) return;
+      pref = m;
+      if (sel && cur() !== m) return;
+      sel && build();
+      emit("mode", m);
+    },
+    get modes() {
+      return sel ? modesFor(sel) : MODES;
+    },
+    cycleMode() {
+      if (!sel) return;
+      const ms = modesFor(sel);
+      pref = ms[(ms.indexOf(cur()) + 1) % ms.length];
+      build();
+      emit("mode", pref);
     }
   };
+  return api;
 }
 export {
   attach,

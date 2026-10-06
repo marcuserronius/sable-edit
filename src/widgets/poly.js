@@ -1,15 +1,14 @@
 import {Widgets} from '../registry.js';
 import {mk} from '../dom.js';
 import {rnd} from '../util.js';
-/* polygon / polyline: vertex squares (drag to move), centre dot moves the whole shape,
-   double-click an edge to add a vertex, double-click a vertex to delete it */
+/* polygon / polyline, edit mode: vertex squares (drag to move), double-click an edge to add a vertex,
+   double-click a vertex to delete it. Moving the whole shape is the hub's job. */
 for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ctx=>{
   const el=ctx.el,closed=tag==='polygon',g=mk('g'),A=(e,o)=>{for(const k in o)e.setAttribute(k,o[k])}; ctx.overlay.append(g);
   const parse=()=>{const n=(el.getAttribute('points')||'').match(/[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g)||[],p=[];
     for(let i=0;i+1<n.length;i+=2)p.push([+n[i],+n[i+1]]);return p};
   let pts=parse(),items=[],hit,dead=false,mv0=false,mv1=false;
   const write=()=>ctx.set('points',pts.map(p=>rnd(p[0])+','+rnd(p[1])).join(' '));
-  const centroid=()=>[pts.reduce((s,p)=>s+p[0],0)/pts.length,pts.reduce((s,p)=>s+p[1],0)/pts.length];
   function drag(h,start,move){
     h.addEventListener('pointerdown',e=>{
       e.stopPropagation();h.setPointerCapture(e.pointerId);const p0=ctx.toLocal(e);start();mv0=mv1;mv1=false;
@@ -37,11 +36,6 @@ for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ct
       drag(h,()=>{},p=>{pts[i]=p});
       h.addEventListener('dblclick',e=>{e.stopPropagation();if(mv0||mv1||pts.length<=(closed?3:2))return;pts.splice(i,1);write();build()});
     });
-    if(pts.length){
-      const c=mk('circle',{style:'pointer-events:all;cursor:move',fill:'var(--acc,#2f6fed)',stroke:'var(--acc,#2f6fed)'});g.append(c);
-      items.push({h:c,get:centroid,r:4.5}); let o;
-      drag(c,()=>{o=pts.map(q=>[...q])},(p,p0)=>{pts=o.map(q=>[q[0]+p[0]-p0[0],q[1]+p[1]-p0[1]])});
-    }
     layout();
   }
   function layout(){
