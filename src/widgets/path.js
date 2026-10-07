@@ -91,7 +91,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
   function build(){
     g.replaceChildren();items=[];lines=[];arcs=[];if(!(segs[act]&&segs[act].t==='A'))act=segs.findIndex(q=>q.t==='A');
     hit=mk('path',{fill:'none',stroke:'transparent','stroke-width':12,'vector-effect':'non-scaling-stroke',style:'pointer-events:stroke;cursor:copy'});
-    hit.addEventListener('dblclick',e=>insert(ctx.toLocal(e))); g.append(hit); gh=mk('g');
+    hit.addEventListener('dblclick',e=>insert(ctx.toLocal(e))); hit.addEventListener('pointerdown',e=>ctx.grab(e,{defer:true})); g.append(hit); gh=mk('g'); // stroke press: drag moves the path, click switches mode (after the double-click window)
     segs.forEach((s,i)=>{
       if(s.t==='C'){ln(()=>prevPt(i),()=>s.pts[0]);ln(()=>s.pts[1],()=>s.pts[2]);ctl(s,0,i);ctl(s,1,i)}
       if(s.t==='Q'){ln(()=>prevPt(i),()=>s.pts[0]);ln(()=>s.pts[0],()=>s.pts[1]);ctl(s,0,i)}

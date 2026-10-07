@@ -54,12 +54,15 @@ export function transformLayer(ctx,kind){
     const M=ctx.matrix(),T=(x,y)=>{const q=new DOMPoint(x,y).matrixTransform(M);return [q.x,q.y]},C=T(b.x+b.w/2,b.y+b.h/2);
     A(ol,{points:[[b.x,b.y],[b.x+b.w,b.y],[b.x+b.w,b.y+b.h],[b.x,b.y+b.h]].map(p=>T(p[0],p[1])).join(' '),'stroke-width':ctx.px(1.5),'stroke-dasharray':ctx.px(5)+' '+ctx.px(3)});
     specs.forEach(s=>{
-      const [x,y]=T(b.x+b.w*s.ix,b.y+b.h*s.iy);
+      let [x,y]=T(b.x+b.w*s.ix,b.y+b.h*s.iy);
+      // a tiny box would bury the shape under its own handles: fan them out to a minimum screen distance from the centre so the middle stays grabbable
+      const dx=s.ix-.5,dy=s.iy-.5,min=ctx.px(dx&&dy?24:20);let vx=x-C[0],vy=y-C[1],d=Math.hypot(vx,vy);
+      if(d<min){if(d<1e-6){vx=M.a*dx+M.c*dy;vy=M.b*dx+M.d*dy;d=Math.hypot(vx,vy)||1}x=C[0]+vx/d*min;y=C[1]+vy/d*min}
       // arrow axis: along the diagonal / away from the centre for corners; along the local x or y axis for edges
       const v=s.role==='sc'||s.role==='rot'?[x-C[0],y-C[1]]:s.role==='sx'||s.role==='kx'?[M.a,M.b]:[M.c,M.d],a=Math.atan2(v[1],v[0]);
       A(s.g,{transform:`translate(${x} ${y}) rotate(${a*180/Math.PI}) scale(${ctx.px(1)})`});
       s.g.style.cursor=s.role==='rot'?'grab':cursor(a);
-      // a handle whose axis has no extent (e.g. vertical scale of a horizontal line) can't do anything: hide it rather than let it sit under the hub
+      // a handle whose axis has no extent (e.g. vertical scale of a horizontal line) can't do anything: hide it rather than let it sit on the shape's centre, where it would block grabbing the shape
       const e=1e-9,live={sc:b.w>e||b.h>e,sx:b.w>e,sy:b.h>e,rot:true,kx:b.h>e,ky:b.w>e}[s.role];
       s.g.style.display=live?'':'none';
     });

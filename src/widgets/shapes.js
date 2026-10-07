@@ -4,7 +4,7 @@ import {num,rnd,box4} from '../util.js';
 /* rect, edit mode: two corner nodes (x1,y1 / x2,y2 - opposite corners, drag one past the other and it keeps tracking
    its own corner) and one corner-radius handle. The radius handle sits on a free corner (top row, preferring the right)
    and moves into the interior: at inset (rx,ry) from that corner, so the handle's x and y offsets ARE the two radii.
-   With radius 0 it sits exactly on the corner. Shift = circular. Moving the whole rect is the hub's job. */
+   With radius 0 it sits exactly on the corner. Shift = circular. Moving the whole rect is the body drag's job (body.js). */
 Widgets.register(el=>el.tagName==='rect',ctx=>{
   const el=ctx.el,rect=()=>({x:num(el,'x'),y:num(el,'y'),w:num(el,'width'),h:num(el,'height')});
   let A,B,a0,b0,rr0,busy=false; // busy: x/y/width/height are written one at a time, so don't resync from a half-written rect
@@ -29,7 +29,7 @@ Widgets.register(el=>el.tagName==='rect',ctx=>{
   return handleWidget(ctx,specs,()=>{const r=rect(),c=corner(),[rx,ry]=radii();
     return [box4(r.x,r.y,r.w,r.h),[[c.cx,c.cy],[c.cx+c.sx*rx,c.cy],[c.cx+c.sx*rx,c.cy+ry],[c.cx,c.cy+ry]]]});
 });
-/* circle / ellipse, edit mode: square handles set the radii (moving is the hub's job) */
+/* circle / ellipse, edit mode: square handles set the radii (moving is the body drag's job) */
 for(const tag of ['circle','ellipse'])Widgets.register(el=>el.tagName===tag,ctx=>{
   const el=ctx.el,c=()=>[num(el,'cx'),num(el,'cy')],ell=tag==='ellipse';
   const rx=()=>num(el,ell?'rx':'r'),ry=()=>num(el,ell?'ry':'r');
@@ -38,7 +38,7 @@ for(const tag of ['circle','ellipse'])Widgets.register(el=>el.tagName===tag,ctx=
   if(ell)specs.push({sq:1,get:()=>[c()[0],c()[1]+ry()],drag:p=>ctx.set('ry',rnd(Math.abs(p[1]-c()[1])))});
   return handleWidget(ctx,specs,()=>box4(c()[0]-rx(),c()[1]-ry(),2*rx(),2*ry()));
 });
-/* line, edit mode: two endpoints (moving the whole line is the hub's job) */
+/* line, edit mode: two endpoints (moving the whole line is the body drag's job) */
 Widgets.register(el=>el.tagName==='line',ctx=>{
   const el=ctx.el,P=(a,b)=>[num(el,a),num(el,b)];
   return handleWidget(ctx,[

@@ -8,5 +8,3 @@ export const LIN=`M-4.6 0H4.6${chev(4.6,0,0)}${chev(-4.6,0,Math.PI)}`;
 /* bent double arrow, bulging toward +x (outward from the pivot): rotate handles */
 const R=5.6,CX=-3.8,A=1.2,ex=Math.cos(A)*R+CX,ey=Math.sin(A)*R;
 export const ROT=`M${f(ex)} ${f(-ey)}A${R} ${R} 0 0 1 ${f(ex)} ${f(ey)}${chev(ex,ey,A+Math.PI/2,2.3,.6)}${chev(ex,-ey,-A-Math.PI/2,2.3,.6)}`;
-/* four-way arrow: the hub */
-export const CROSS=`M-5 0H5M0-5V5${chev(5,0,0)}${chev(-5,0,Math.PI)}${chev(0,5,Math.PI/2)}${chev(0,-5,-Math.PI/2)}`;

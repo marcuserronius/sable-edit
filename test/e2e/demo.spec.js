@@ -31,25 +31,26 @@ test('clicking empty space deselects', async ({ page }) => {
   await expect(page.locator('#readout')).toHaveText('nothing selected');
 });
 
-/* ---- edit modes: scale -> rotate/skew -> edit, cycled by the hub ---- */
-const hub = page => page.evaluate(() => {
-  const r = document.querySelector('#art').lastElementChild.children[1].querySelector('circle').getBoundingClientRect();
+/* ---- edit modes: scale -> rotate/skew -> edit, cycled by clicking the selected shape ---- */
+// the middle of a shape's screen box: a point on the body of the shapes these tests use
+const body = (page, sel) => page.evaluate(s => {
+  const r = document.querySelector(s).getBoundingClientRect();
   return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-});
+}, sel);
 // handles of the layer under the overlay, in DOM order (scale/rotate: TL,T,TR,L,R,BL,B,BR; edit mode: the widget's handles)
-const handles = page => page.evaluate(() => [...document.querySelector('#art').lastElementChild.children[0].children]
+const handles = page => page.evaluate(() => [...[...document.querySelector('#art').lastElementChild.children].find(c => c.getAttribute('data-sable') !== 'halo').children]
   .filter(c => c.tagName !== 'polygon').map(c => { const r = (c.querySelector('circle') || c).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }));
 const drag = async (page, from, to) => {
   await page.mouse.move(from.x, from.y); await page.mouse.down();
   await page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 3 }); await page.mouse.move(to.x, to.y, { steps: 5 }); await page.mouse.up();
 };
 
-test('the hub cycles scale -> rotate -> edit -> scale on click', async ({ page }) => {
+test('clicking the selected shape cycles scale -> rotate -> edit -> scale', async ({ page }) => {
   await page.goto('/demo/');
   await page.locator('rect.edit').first().click();
   await expect(page.locator('#mode')).toHaveText('mode: scale');
   for (const m of ['rotate', 'edit', 'scale']) {
-    const h = await hub(page); await page.mouse.click(h.x, h.y);
+    const h = await body(page, 'rect.edit'); await page.mouse.click(h.x, h.y);
     await expect(page.locator('#mode')).toHaveText('mode: ' + m);
   }
 });
@@ -58,7 +59,7 @@ test('shapes with no editor of their own (text) only cycle scale <-> rotate', as
   await page.goto('/demo/');
   await page.locator('text.edit').click();
   expect(await page.evaluate(() => ed.modes)).toEqual(['scale', 'rotate']);
-  const h = await hub(page); await page.mouse.click(h.x, h.y); await page.mouse.click(h.x, h.y);
+  const h = await body(page, 'text.edit'); await page.mouse.click(h.x, h.y); await page.mouse.click(h.x, h.y);
   await expect(page.locator('#mode')).toHaveText('mode: scale');
 });
 
@@ -80,7 +81,7 @@ test('rotate mode: a corner follows the pointer angle about the centre; edge han
   await page.goto('/demo/');
   await page.locator('rect.edit').first().click();
   await page.evaluate(() => { ed.mode = 'rotate'; });
-  const C = await hub(page), H = await handles(page), ang = p => Math.atan2(p.y - C.y, p.x - C.x), r = Math.hypot(H[2].x - C.x, H[2].y - C.y);
+  const C = await body(page, 'rect.edit'), H = await handles(page), ang = p => Math.atan2(p.y - C.y, p.x - C.x), r = Math.hypot(H[2].x - C.x, H[2].y - C.y);
   await drag(page, H[2], { x: C.x + Math.cos(ang(H[2]) + 0.5) * r, y: C.y + Math.sin(ang(H[2]) + 0.5) * r });
   const H2 = await handles(page);
   expect((ang(H2[2]) - ang(H[2])) * 180 / Math.PI).toBeCloseTo(28.65, 0);
@@ -89,10 +90,10 @@ test('rotate mode: a corner follows the pointer angle about the centre; edge han
   expect(await page.locator('rect.edit').first().getAttribute('transform')).toMatch(/^matrix\(/);
 });
 
-test('hub drag moves a rect by rewriting x/y, not transform; undo restores', async ({ page }) => {
+test('dragging the body moves a rect by rewriting x/y, not transform; undo restores', async ({ page }) => {
   await page.goto('/demo/');
   const rect = page.locator('#plain-rect'); await rect.click();
-  const h = await hub(page);
+  const h = await body(page, '#plain-rect');
   await drag(page, h, { x: h.x + 30, y: h.y + 12 });
   expect(await rect.getAttribute('transform')).toBeNull();
   expect(await rect.getAttribute('x')).not.toBe('30');

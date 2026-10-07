@@ -2,7 +2,8 @@ import {Widgets} from './registry.js';
 import {mk} from './dom.js';
 import {ownM} from './xform.js';
 import {transformLayer} from './widgets/transform.js';
-import {hubWidget} from './widgets/hub.js';
+import {haloWidget} from './widgets/halo.js';
+import {bodyGrab} from './body.js';
 import {Tools} from './tools.js';
 import {openMenu as openMenuUI} from './menu.js';
 const MODES=['scale','rotate','edit'];
@@ -11,7 +12,7 @@ export function attach(svg,opts={}){
   let ov=opts.overlay; if(!ov){ov=mk('g',{style:'pointer-events:none'});svg.append(ov)}
   const hs={}, on=(e,f)=>{(hs[e]??=[]).push(f)}, emit=(e,d)=>[...(hs[e]||[])].forEach(f=>f(d));
   if(opts.onSelect)on('select',opts.onSelect);if(opts.onCreate)on('create',d=>opts.onCreate(d.el)); if(opts.onChange)on('change',d=>opts.onChange(d.el,d.attr,d.src));
-  let sel=null,layer=null,hub=null,subs=[],pref=MODES.includes(opts.mode)?opts.mode:'scale';
+  let sel=null,layer=null,halo=null,body=null,subs=[],pref=MODES.includes(opts.mode)?opts.mode:'scale';
   let tool='pointer',oneShot=false,gesture=null,swallow=false,menuCtl=null; // creation tools: see the 'Tools and context menu' section
 
   /* undo/redo: edits made in one pointer gesture (or one burst of typing) form one step */
@@ -43,7 +44,7 @@ export function attach(svg,opts={}){
   };
   const undo=()=>step(undoS,redoS,-1),redo=()=>step(redoS,undoS,1);
   const clearHistory=()=>{undoS.length=redoS.length=0;emit('history')};
-  const onDown=()=>{gid++};
+  const onDown=()=>{gid++;body&&body.cancel()}; // a new press also cancels a pending (deferred) mode switch
   const onKey=e=>{
     const t=document.activeElement;if(/INPUT|TEXTAREA|SELECT/.test(t?.tagName)||t?.isContentEditable)return;
     if(e.key==='Escape'){if(!gesture&&tool!=='pointer')setTool('pointer');return}
@@ -60,16 +61,18 @@ export function attach(svg,opts={}){
   const modesFor=el=>{const e=Widgets.find(el);return e&&!e.generic?MODES:MODES.slice(0,2)};
   const cur=()=>{const ms=modesFor(sel);return ms.includes(pref)?pref:ms[0]};
   const unsub=()=>{subs.forEach(([e,f])=>{const a=hs[e],i=a?a.indexOf(f):-1;if(i>=0)a.splice(i,1)});subs=[]};
-  const teardown=()=>{layer?.destroy();hub?.destroy();layer=hub=null;unsub();ov.replaceChildren()};
+  const teardown=()=>{layer?.destroy();halo?.destroy();layer=halo=null;unsub();ov.replaceChildren()};
   let ctx=null;
   function build(){
-    teardown();const m=cur(),ms=modesFor(sel);
+    teardown();const m=cur();
+    // the grab halo goes first so it sits under the handles; path/polygon/polyline edit mode brings its own (it also owns double-click)
+    halo=m==='edit'&&/^(path|polygon|polyline)$/.test(sel.tagName)?null:haloWidget(ctx);
     layer=m==='edit'?Widgets.find(sel).factory(ctx):transformLayer(ctx,m);
-    hub=hubWidget(ctx,{modes:ms,index:ms.indexOf(m),cycle:()=>api.cycleMode(),moved:()=>layer.update&&layer.update()});
   }
   function select(el){
     if(el===sel)return;
-    teardown();sel=el;ctx=null;
+    body?.destroy();body=null;teardown();sel=el;ctx=null;
+    if(tool==='pointer')svg.style.cursor=cursorWas;
     if(el){
       const toOverlay=e=>{const q=new DOMPoint(e.clientX,e.clientY).matrixTransform(ov.getScreenCTM().inverse());return [q.x,q.y]};
       ctx={el,overlay:ov,on:(e,f)=>{on(e,f);subs.push([e,f])},matrix:()=>matrixFor(el),px:n=>n/scale(),toOverlay,
@@ -77,18 +80,38 @@ export function attach(svg,opts={}){
         /* pointer in the parent's coordinate system: what the element's own `transform` is relative to */
         toParent(e){const o=toOverlay(e),q=new DOMPoint(o[0],o[1]).matrixTransform(matrixFor(el).multiply(ownM(el).inverse()).inverse());return [q.x,q.y]},
         bbox(){try{const b=el.getBBox();return {x:b.x,y:b.y,w:b.width,h:b.height}}catch{return null}},
-        set(a,v,src='widget'){setAttr(el,a,v,src)}};
+        set(a,v,src='widget'){setAttr(el,a,v,src)},
+        /* a press on this shape that a widget's own overlay element caught: drag = move, click = next mode (see body.js) */
+        grab(e,o){if(!ctxClick(e))body.grab(e,o)}};
+      body=bodyGrab(ctx,{cycle:()=>api.cycleMode(),moved:()=>layer&&layer.update&&layer.update(),
+        done:()=>{swallow=true;setTimeout(()=>{swallow=false})}}); // the click that follows a grab must not select/deselect
       build();
     }
     emit('select',el);
   }
-  const onClick=e=>{if(swallow){swallow=false;return}if(ov.contains(e.target)||ctxClick(e))return;const t=e.target.closest?.(PRIM);select(t&&root.contains(t)?t:null)};
+  /* Pressing a shape selects it and starts moving it in the same gesture; pressing the selected shape moves it, and a release
+     without a drag switches mode (body.js). Clicking empty space deselects. Handles and widget proxies live in the overlay and
+     never reach here. A bare click (no press, e.g. el.click() from a script) still selects. */
+  const pickAt=e=>{const t=e.target.closest?.(PRIM);return t&&root.contains(t)?t:null};
+  const onPress=e=>{
+    if(e.button!==0||ctxClick(e)||tool!=='pointer'||gesture||ov.contains(e.target))return;
+    const t=pickAt(e);if(!t)return;
+    if(t===sel)body.grab(e);
+    else if(opts.pick!==false){select(t);body.grab(e,{fresh:true})}
+  };
+  const onClick=e=>{if(swallow){swallow=false;return}if(ov.contains(e.target)||ctxClick(e))return;select(pickAt(e))};
+  svg.addEventListener('pointerdown',onPress);
   if(opts.pick!==false)svg.addEventListener('click',onClick);
+  const onHover=e=>{ // the selected shape's body is a move handle: say so
+    if(tool!=='pointer'||gesture||(body&&body.busy))return;
+    svg.style.cursor=sel&&!ov.contains(e.target)&&pickAt(e)===sel?'move':cursorWas;
+  };
+  svg.addEventListener('pointermove',onHover);
   /* ---- Tools and context menu ----
-     Tool = pointer (the default: click to select, hub and handles edit) or a registered creation tool (src/tools/*).
+     Tool = pointer (the default: press to select, drag the shape to move it, handles edit) or a registered creation tool (src/tools/*).
      'Use Once' arms a tool for one successful gesture and then returns to pointer; 'Switch Tool' sets it until changed. */
   const isMac=()=>/Mac|iPhone|iPad/i.test(navigator.platform||navigator.userAgent||'');
-  const ctxClick=e=>e.button===2||(e.button===0&&e.ctrlKey&&isMac()); // belongs to the context menu, never to a tool, the hub or a handle
+  const ctxClick=e=>e.button===2||(e.button===0&&e.ctrlKey&&isMac()); // belongs to the context menu, never to a tool, a body grab or a handle
   const cursorWas=svg.style.cursor;
   const hostEl=()=>{const c=opts.createIn;return (typeof c==='string'?svg.querySelector(c):c)||root};
   const shapeAttrs=()=>({fill:'#d6eaf8',stroke:'#2874a6','stroke-width':2,...opts.shapeAttrs});
@@ -141,7 +164,7 @@ export function attach(svg,opts={}){
   svg.addEventListener('pointerdown',toolDown,true);svg.addEventListener('contextmenu',onCtx);
   const api={select,set:setAttr,undo,redo,clearHistory,get canUndo(){return undoS.length>0},get canRedo(){return redoS.length>0},get selected(){return sel},on,
     refresh(){emit('view')}, changed(el,attr,src='app'){emit('change',{el,attr,src})},
-    destroy(){closeMenu();setTool('pointer');select(null);svg.removeEventListener('pointerdown',toolDown,true);svg.removeEventListener('contextmenu',onCtx);svg.removeEventListener('click',onClick);svg.removeEventListener('pointerdown',onDown,true);removeEventListener('keydown',onKey);if(!opts.overlay)ov.remove()},
+    destroy(){closeMenu();setTool('pointer');select(null);svg.removeEventListener('pointerdown',toolDown,true);svg.removeEventListener('contextmenu',onCtx);svg.removeEventListener('click',onClick);svg.removeEventListener('pointerdown',onPress);svg.removeEventListener('pointermove',onHover);svg.removeEventListener('pointerdown',onDown,true);removeEventListener('keydown',onKey);if(!opts.overlay)ov.remove()},
     get mode(){return sel?cur():pref},set mode(m){if(!MODES.includes(m)||m===api.mode)return;pref=m;if(sel&&cur()!==m)return;sel&&build();emit('mode',m)},
     get modes(){return sel?modesFor(sel):MODES},
     get tool(){return tool},set tool(id){setTool(id)},useTool(id){setTool(id,true)},get tools(){return Tools.list.map(({id,label})=>({id,label}))},

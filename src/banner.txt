@@ -1,7 +1,7 @@
 /*! SableEdit (sable-edit.js) — drop-in SVG element editor (paths first). No dependencies.
   Usage:  const ed = SableEdit.attach(svgElement, { onChange(el,attr){...} });
   Options: root (limit editable subtree), overlay (existing <g> to draw handles in), mode ('scale'|'rotate'|'edit', default 'scale'),
-           pick (default true: click an element to select it, click empty space to deselect),
+           pick (default true: press an element to select it, click empty space to deselect),
            selector (editable elements, default basic shapes + path + text),
            onSelect(el), onChange(el, attr, src), onCreate(el),
            createIn (element or selector: where new shapes go, default root), shapeAttrs (attributes for new shapes, default a light
@@ -18,20 +18,24 @@
   Tools:    the pointer tool is the editing behaviour described below; other tools create shapes. Built in: circle (press = centre, drag = radius),
             rect (press = one corner, release = the opposite corner, any direction), ellipse (the same two corners, of its bounding box),
             line (press = start point, release = end point).
-            A tool is armed -> every press is its gesture (nothing is selected, handles and the hub stay out of the way); Esc cancels a drag.
+            A tool is armed -> every press is its gesture (nothing is selected, handles stay out of the way); Esc cancels a drag.
             A created shape is one undo step. A one-use tool selects the new shape; a switched-to tool stays armed with nothing selected.
             SableEdit.tools.register({id, label, cursor, begin(t, p0, ev) -> {move(p,ev), end(p,ev) -> element|null, cancel?()}})
             t = {host, px(n), make(tag, attrs)}; points are in the createIn container's coordinates.
   Widgets:  SableEdit.widgets.register(el=>bool, ctx=>({update(),destroy()}))   (a widget is a shape's *edit mode*)
             ctx = { el, overlay, matrix(), px(n), toLocal(pointerEvent), toParent(pointerEvent), toOverlay(pointerEvent),
-                    bbox(), set(attr,val), on(evt,fn) }
+                    bbox(), set(attr,val), on(evt,fn),
+                    grab(pointerEvent[, {defer}]) }   grab: forward a press your own overlay element caught, so it still moves/cycles the shape
   Handles are drawn in the overlay in the same space as the document, so editing happens in place.
-  Modes: a selected shape has a hub (marked dot at the centre of its bounding box) in every mode: drag = move, click/tap = next mode.
+  Selecting: press a shape to select it (and start moving it, if you drag); click empty space to deselect.
+  Modes: press the selected shape anywhere in any mode: drag = move, click/tap without dragging = next mode. The handles show the mode.
+         A line or unfilled path is grabbed by its stroke (a few pixels of slack). In path/polygon/polyline edit mode the stroke also means
+         double-click = add a node, so there the mode switch waits ~300 ms for a possible second click.
     scale        bounding box in the shape's own frame; edge handles resize one axis, corners resize proportionally (opposite side fixed)
     rotate/skew  corners rotate about the centre (Shift = 15 degree steps), edge midpoints skew parallel to their edge
     edit         the shape's own controls (the registered widget). Shapes with only the catch-all widget (text...) skip this mode.
   Scale and rotate/skew work on any element by writing `transform` (compacted to translate/scale/rotate/matrix when a gesture ends).
-  The hub rewrites rect/circle/ellipse/line/polygon/polyline/path coordinates directly and falls back to `transform` for the rest.
+  Moving rewrites rect/circle/ellipse/line/polygon/polyline/path coordinates directly and falls back to `transform` for the rest.
   Edit widgets: path, rect, circle, ellipse, line, polygon, polyline. Path editing: drag nodes/handles, Shift mirrors a cubic handle,
   double-click path = add node, double-click node = delete.
   Rect: two corner nodes (x1,y1 / x2,y2) and one corner-radius dot, inset from a free corner by (rx,ry); Shift = circular.

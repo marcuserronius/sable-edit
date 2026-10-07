@@ -1,7 +1,7 @@
 /*! SableEdit (sable-edit.js) — drop-in SVG element editor (paths first). No dependencies.
   Usage:  const ed = SableEdit.attach(svgElement, { onChange(el,attr){...} });
   Options: root (limit editable subtree), overlay (existing <g> to draw handles in), mode ('scale'|'rotate'|'edit', default 'scale'),
-           pick (default true: click an element to select it, click empty space to deselect),
+           pick (default true: press an element to select it, click empty space to deselect),
            selector (editable elements, default basic shapes + path + text),
            onSelect(el), onChange(el, attr, src), onCreate(el),
            createIn (element or selector: where new shapes go, default root), shapeAttrs (attributes for new shapes, default a light
@@ -16,21 +16,26 @@
   Context menu: right-click (Ctrl-click on a Mac) anywhere on the canvas. 'Use Once' arms a tool for one shape, then returns to the pointer;
     'Switch Tool' keeps the tool until you pick Pointer (or press Esc). Items are {label, action, checked, disabled, submenu:[...]} or {sep:1}.
   Tools:    the pointer tool is the editing behaviour described below; other tools create shapes. Built in: circle (press = centre, drag = radius),
-            rect (press = one corner, release = the opposite corner, any direction).
-            A tool is armed -> every press is its gesture (nothing is selected, handles and the hub stay out of the way); Esc cancels a drag.
+            rect (press = one corner, release = the opposite corner, any direction), ellipse (the same two corners, of its bounding box),
+            line (press = start point, release = end point).
+            A tool is armed -> every press is its gesture (nothing is selected, handles stay out of the way); Esc cancels a drag.
             A created shape is one undo step. A one-use tool selects the new shape; a switched-to tool stays armed with nothing selected.
             SableEdit.tools.register({id, label, cursor, begin(t, p0, ev) -> {move(p,ev), end(p,ev) -> element|null, cancel?()}})
             t = {host, px(n), make(tag, attrs)}; points are in the createIn container's coordinates.
   Widgets:  SableEdit.widgets.register(el=>bool, ctx=>({update(),destroy()}))   (a widget is a shape's *edit mode*)
             ctx = { el, overlay, matrix(), px(n), toLocal(pointerEvent), toParent(pointerEvent), toOverlay(pointerEvent),
-                    bbox(), set(attr,val), on(evt,fn) }
+                    bbox(), set(attr,val), on(evt,fn),
+                    grab(pointerEvent[, {defer}]) }   grab: forward a press your own overlay element caught, so it still moves/cycles the shape
   Handles are drawn in the overlay in the same space as the document, so editing happens in place.
-  Modes: a selected shape has a hub (marked dot at the centre of its bounding box) in every mode: drag = move, click/tap = next mode.
+  Selecting: press a shape to select it (and start moving it, if you drag); click empty space to deselect.
+  Modes: press the selected shape anywhere in any mode: drag = move, click/tap without dragging = next mode. The handles show the mode.
+         A line or unfilled path is grabbed by its stroke (a few pixels of slack). In path/polygon/polyline edit mode the stroke also means
+         double-click = add a node, so there the mode switch waits ~300 ms for a possible second click.
     scale        bounding box in the shape's own frame; edge handles resize one axis, corners resize proportionally (opposite side fixed)
     rotate/skew  corners rotate about the centre (Shift = 15 degree steps), edge midpoints skew parallel to their edge
     edit         the shape's own controls (the registered widget). Shapes with only the catch-all widget (text...) skip this mode.
   Scale and rotate/skew work on any element by writing `transform` (compacted to translate/scale/rotate/matrix when a gesture ends).
-  The hub rewrites rect/circle/ellipse/line/polygon/polyline/path coordinates directly and falls back to `transform` for the rest.
+  Moving rewrites rect/circle/ellipse/line/polygon/polyline/path coordinates directly and falls back to `transform` for the rest.
   Edit widgets: path, rect, circle, ellipse, line, polygon, polyline. Path editing: drag nodes/handles, Shift mirrors a cubic handle,
   double-click path = add node, double-click node = delete.
   Rect: two corner nodes (x1,y1 / x2,y2) and one corner-radius dot, inset from a free corner by (rx,ry); Shift = circular.
@@ -434,6 +439,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     if (!(segs[act] && segs[act].t === "A")) act = segs.findIndex((q) => q.t === "A");
     hit = mk("path", { fill: "none", stroke: "transparent", "stroke-width": 12, "vector-effect": "non-scaling-stroke", style: "pointer-events:stroke;cursor:copy" });
     hit.addEventListener("dblclick", (e) => insert(ctx.toLocal(e)));
+    hit.addEventListener("pointerdown", (e) => ctx.grab(e, { defer: true }));
     g.append(hit);
     gh = mk("g");
     segs.forEach((s, i) => {
@@ -701,6 +707,7 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
     items = [];
     hit = mk(tag, { fill: "none", stroke: "transparent", "stroke-width": 12, "vector-effect": "non-scaling-stroke", style: "pointer-events:stroke;cursor:copy" });
     hit.addEventListener("dblclick", (e) => insert(ctx.toLocal(e)));
+    hit.addEventListener("pointerdown", (e) => ctx.grab(e, { defer: true }));
     g.append(hit);
     pts.forEach((_, i) => {
       const h = mk("rect", { style: "pointer-events:all;cursor:move", fill: "var(--panel,#fff)", stroke: "var(--acc,#2f6fed)" });
@@ -826,6 +833,43 @@ Tools.register({ id: "rect", label: "Rectangle", cursor: "crosshair", begin(t, p
   } };
 } });
 
+// src/tools/ellipse.js
+var ellipseFrom = (a, b, min = 0) => {
+  const w = Math.abs(b[0] - a[0]), h = Math.abs(b[1] - a[1]);
+  return w > min && h > min ? { cx: rnd((a[0] + b[0]) / 2), cy: rnd((a[1] + b[1]) / 2), rx: rnd(w / 2), ry: rnd(h / 2) } : null;
+};
+Tools.register({ id: "ellipse", label: "Ellipse", cursor: "crosshair", begin(t, p0) {
+  const el = t.make("ellipse", { cx: rnd(p0[0]), cy: rnd(p0[1]), rx: 0, ry: 0 }), put = (c) => {
+    for (const k in c) el.setAttribute(k, c[k]);
+  };
+  return { move: (p) => {
+    const c = ellipseFrom(p0, p);
+    c && put(c);
+  }, end: (p) => {
+    const c = ellipseFrom(p0, p, t.px(2));
+    if (!c) return null;
+    put(c);
+    return el;
+  } };
+} });
+
+// src/tools/line.js
+var lineFrom = (a, b, min = 0) => Math.hypot(b[0] - a[0], b[1] - a[1]) > min ? { x1: rnd(a[0]), y1: rnd(a[1]), x2: rnd(b[0]), y2: rnd(b[1]) } : null;
+Tools.register({ id: "line", label: "Line", cursor: "crosshair", begin(t, p0) {
+  const el = t.make("line", { x1: rnd(p0[0]), y1: rnd(p0[1]), x2: rnd(p0[0]), y2: rnd(p0[1]) }), put = (c) => {
+    for (const k in c) el.setAttribute(k, c[k]);
+  };
+  return { move: (p) => {
+    const c = lineFrom(p0, p);
+    c && put(c);
+  }, end: (p) => {
+    const c = lineFrom(p0, p, t.px(2));
+    if (!c) return null;
+    put(c);
+    return el;
+  } };
+} });
+
 // src/xform.js
 var ownM = (el) => {
   let m = new DOMMatrix();
@@ -860,7 +904,6 @@ var A = 1.2;
 var ex = Math.cos(A) * R + CX;
 var ey = Math.sin(A) * R;
 var ROT = `M${f(ex)} ${f(-ey)}A${R} ${R} 0 0 1 ${f(ex)} ${f(ey)}${chev(ex, ey, A + Math.PI / 2, 2.3, 0.6)}${chev(ex, -ey, -A - Math.PI / 2, 2.3, 0.6)}`;
-var CROSS = `M-5 0H5M0-5V5${chev(5, 0, 0)}${chev(-5, 0, Math.PI)}${chev(0, 5, Math.PI / 2)}${chev(0, -5, -Math.PI / 2)}`;
 
 // src/widgets/transform.js
 var ACC = "var(--acc,#2f6fed)";
@@ -974,7 +1017,18 @@ function transformLayer(ctx, kind) {
     }, C = T(b.x + b.w / 2, b.y + b.h / 2);
     A2(ol, { points: [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]].map((p) => T(p[0], p[1])).join(" "), "stroke-width": ctx.px(1.5), "stroke-dasharray": ctx.px(5) + " " + ctx.px(3) });
     specs.forEach((s) => {
-      const [x, y] = T(b.x + b.w * s.ix, b.y + b.h * s.iy);
+      let [x, y] = T(b.x + b.w * s.ix, b.y + b.h * s.iy);
+      const dx = s.ix - 0.5, dy = s.iy - 0.5, min = ctx.px(dx && dy ? 24 : 20);
+      let vx = x - C[0], vy = y - C[1], d = Math.hypot(vx, vy);
+      if (d < min) {
+        if (d < 1e-6) {
+          vx = M.a * dx + M.c * dy;
+          vy = M.b * dx + M.d * dy;
+          d = Math.hypot(vx, vy) || 1;
+        }
+        x = C[0] + vx / d * min;
+        y = C[1] + vy / d * min;
+      }
       const v = s.role === "sc" || s.role === "rot" ? [x - C[0], y - C[1]] : s.role === "sx" || s.role === "kx" ? [M.a, M.b] : [M.c, M.d], a = Math.atan2(v[1], v[0]);
       A2(s.g, { transform: `translate(${x} ${y}) rotate(${a * 180 / Math.PI}) scale(${ctx.px(1)})` });
       s.g.style.cursor = s.role === "rot" ? "grab" : cursor(a);
@@ -988,6 +1042,32 @@ function transformLayer(ctx, kind) {
   return { update: layout, destroy() {
     dead = true;
     g.remove();
+  } };
+}
+
+// src/widgets/halo.js
+var GEO = { path: ["d"], polygon: ["points"], polyline: ["points"], line: ["x1", "y1", "x2", "y2"], rect: ["x", "y", "width", "height", "rx", "ry"], circle: ["cx", "cy", "r"], ellipse: ["cx", "cy", "rx", "ry"] };
+function haloWidget(ctx) {
+  const el = ctx.el, geo = GEO[el.tagName];
+  if (!geo) return null;
+  const h = mk(el.tagName, { "data-sable": "halo", fill: "none", stroke: "transparent", "stroke-width": 12, "vector-effect": "non-scaling-stroke", style: "pointer-events:stroke;cursor:move" });
+  ctx.overlay.append(h);
+  let dead = false;
+  h.addEventListener("pointerdown", (e) => ctx.grab(e));
+  function layout() {
+    geo.forEach((a) => {
+      const v = el.getAttribute(a);
+      v === null ? h.removeAttribute(a) : h.setAttribute(a, v);
+    });
+    const M = ctx.matrix();
+    h.setAttribute("transform", `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})`);
+  }
+  ctx.on("view", () => !dead && layout());
+  ctx.on("change", () => !dead && layout());
+  layout();
+  return { update: layout, destroy() {
+    dead = true;
+    h.remove();
   } };
 }
 
@@ -1014,38 +1094,27 @@ function mover(ctx) {
   return null;
 }
 
-// src/widgets/hub.js
-var ACC2 = "var(--acc,#2f6fed)";
-var PANEL2 = "var(--panel,#fff)";
-function hubWidget(ctx, { modes, index, cycle, moved }) {
-  const el = ctx.el, g = mk("g"), h = mk("g", { style: "pointer-events:all;cursor:move" });
-  let dead = false;
-  const title = mk("title");
-  title.textContent = "Drag to move \xB7 click for the next mode (" + modes[index] + ")";
-  h.append(
-    title,
-    mk("circle", { r: 12, fill: "none", stroke: ACC2, "stroke-width": 1 }),
-    mk("circle", { r: 9, fill: ACC2, stroke: PANEL2, "stroke-width": 1.6 }),
-    mk("path", { d: CROSS, fill: "none", stroke: PANEL2, "stroke-width": 1.3, "stroke-linecap": "round", "stroke-linejoin": "round" })
-  );
-  g.append(h);
-  modes.forEach((_, i) => g.append(mk("circle", { cx: (i - (modes.length - 1) / 2) * 6, cy: 17, r: 2, fill: i === index ? ACC2 : PANEL2, stroke: ACC2, "stroke-width": 1, style: "pointer-events:none" })));
-  ctx.overlay.append(g);
-  function layout() {
-    const b = ctx.bbox();
-    g.style.display = b ? "" : "none";
-    if (!b) return;
-    const q = new DOMPoint(b.x + b.w / 2, b.y + b.h / 2).matrixTransform(ctx.matrix());
-    g.setAttribute("transform", `translate(${q.x} ${q.y}) scale(${ctx.px(1)})`);
-  }
-  h.addEventListener("pointerdown", (e) => {
-    e.stopPropagation();
-    h.setPointerCapture(e.pointerId);
-    const x0 = e.clientX, y0 = e.clientY, t0 = el.getAttribute("transform") || "", mv = mover(ctx), l0 = ctx.toLocal(e), p0 = ctx.toParent(e);
+// src/body.js
+var DBL = 300;
+function bodyGrab(ctx, { cycle, moved, done }) {
+  const el = ctx.el;
+  let timer = 0, armed = -1e9, busy = false, off = null;
+  const cancel = () => {
+    clearTimeout(timer);
+    timer = 0;
+  };
+  function grab(e, { fresh = false, defer = false } = {}) {
+    if (e.button !== 0 || busy) return;
+    const second = performance.now() - armed < DBL;
+    armed = -1e9;
+    cancel();
+    const id = e.pointerId, thr = e.pointerType === "touch" ? 8 : 3, x0 = e.clientX, y0 = e.clientY, t0 = el.getAttribute("transform") || "", mv = mover(ctx), l0 = ctx.toLocal(e), p0 = ctx.toParent(e);
     let go = false;
+    busy = true;
     const move = (ev) => {
+      if (ev.pointerId !== id) return;
       if (!go) {
-        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) <= 3) return;
+        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) <= thr) return;
         go = true;
       }
       if (mv) {
@@ -1057,19 +1126,37 @@ function hubWidget(ctx, { modes, index, cycle, moved }) {
       }
       moved();
     };
-    h.addEventListener("pointermove", move);
-    h.addEventListener("pointerup", () => {
-      h.removeEventListener("pointermove", move);
-      if (!go) cycle();
-      else if (!mv) ctx.set("transform", fmtTransform(ownM(el)));
-    }, { once: true });
-  });
-  ctx.on("view", () => !dead && layout());
-  ctx.on("change", () => !dead && layout());
-  layout();
-  return { update: layout, destroy() {
-    dead = true;
-    g.remove();
+    const stop = () => {
+      removeEventListener("pointermove", move);
+      removeEventListener("pointerup", end);
+      removeEventListener("pointercancel", end);
+      busy = false;
+      off = null;
+    };
+    function end(ev) {
+      if (ev.pointerId !== id) return;
+      stop();
+      if (go && !mv) ctx.set("transform", fmtTransform(ownM(el)));
+      done();
+      if (go || fresh || second || ev.type !== "pointerup") return;
+      if (defer) {
+        armed = performance.now();
+        timer = setTimeout(() => {
+          timer = 0;
+          cycle();
+        }, DBL);
+      } else cycle();
+    }
+    addEventListener("pointermove", move);
+    addEventListener("pointerup", end);
+    addEventListener("pointercancel", end);
+    off = stop;
+  }
+  return { grab, cancel, get busy() {
+    return busy;
+  }, destroy() {
+    cancel();
+    off && off();
   } };
 }
 
@@ -1235,7 +1322,7 @@ function attach(svg, opts = {}) {
   if (opts.onSelect) on("select", opts.onSelect);
   if (opts.onCreate) on("create", (d) => opts.onCreate(d.el));
   if (opts.onChange) on("change", (d) => opts.onChange(d.el, d.attr, d.src));
-  let sel = null, layer = null, hub = null, subs = [], pref = MODES.includes(opts.mode) ? opts.mode : "scale";
+  let sel = null, layer = null, halo = null, body = null, subs = [], pref = MODES.includes(opts.mode) ? opts.mode : "scale";
   let tool = "pointer", oneShot = false, gesture = null, swallow = false, menuCtl = null;
   const undoS = [], redoS = [];
   let gid = 0;
@@ -1285,6 +1372,7 @@ function attach(svg, opts = {}) {
   };
   const onDown = () => {
     gid++;
+    body && body.cancel();
   };
   const onKey = (e) => {
     const t = document.activeElement;
@@ -1327,23 +1415,26 @@ function attach(svg, opts = {}) {
   };
   const teardown = () => {
     layer?.destroy();
-    hub?.destroy();
-    layer = hub = null;
+    halo?.destroy();
+    layer = halo = null;
     unsub();
     ov.replaceChildren();
   };
   let ctx = null;
   function build() {
     teardown();
-    const m = cur(), ms = modesFor(sel);
+    const m = cur();
+    halo = m === "edit" && /^(path|polygon|polyline)$/.test(sel.tagName) ? null : haloWidget(ctx);
     layer = m === "edit" ? Widgets.find(sel).factory(ctx) : transformLayer(ctx, m);
-    hub = hubWidget(ctx, { modes: ms, index: ms.indexOf(m), cycle: () => api.cycleMode(), moved: () => layer.update && layer.update() });
   }
   function select(el) {
     if (el === sel) return;
+    body?.destroy();
+    body = null;
     teardown();
     sel = el;
     ctx = null;
+    if (tool === "pointer") svg.style.cursor = cursorWas;
     if (el) {
       const toOverlay = (e) => {
         const q = new DOMPoint(e.clientX, e.clientY).matrixTransform(ov.getScreenCTM().inverse());
@@ -1378,22 +1469,55 @@ function attach(svg, opts = {}) {
         },
         set(a, v, src = "widget") {
           setAttr(el, a, v, src);
+        },
+        /* a press on this shape that a widget's own overlay element caught: drag = move, click = next mode (see body.js) */
+        grab(e, o) {
+          if (!ctxClick(e)) body.grab(e, o);
         }
       };
+      body = bodyGrab(ctx, {
+        cycle: () => api.cycleMode(),
+        moved: () => layer && layer.update && layer.update(),
+        done: () => {
+          swallow = true;
+          setTimeout(() => {
+            swallow = false;
+          });
+        }
+      });
       build();
     }
     emit("select", el);
   }
+  const pickAt = (e) => {
+    const t = e.target.closest?.(PRIM);
+    return t && root.contains(t) ? t : null;
+  };
+  const onPress = (e) => {
+    if (e.button !== 0 || ctxClick(e) || tool !== "pointer" || gesture || ov.contains(e.target)) return;
+    const t = pickAt(e);
+    if (!t) return;
+    if (t === sel) body.grab(e);
+    else if (opts.pick !== false) {
+      select(t);
+      body.grab(e, { fresh: true });
+    }
+  };
   const onClick = (e) => {
     if (swallow) {
       swallow = false;
       return;
     }
     if (ov.contains(e.target) || ctxClick(e)) return;
-    const t = e.target.closest?.(PRIM);
-    select(t && root.contains(t) ? t : null);
+    select(pickAt(e));
   };
+  svg.addEventListener("pointerdown", onPress);
   if (opts.pick !== false) svg.addEventListener("click", onClick);
+  const onHover = (e) => {
+    if (tool !== "pointer" || gesture || body && body.busy) return;
+    svg.style.cursor = sel && !ov.contains(e.target) && pickAt(e) === sel ? "move" : cursorWas;
+  };
+  svg.addEventListener("pointermove", onHover);
   const isMac = () => /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "");
   const ctxClick = (e) => e.button === 2 || e.button === 0 && e.ctrlKey && isMac();
   const cursorWas = svg.style.cursor;
@@ -1556,6 +1680,8 @@ function attach(svg, opts = {}) {
       svg.removeEventListener("pointerdown", toolDown, true);
       svg.removeEventListener("contextmenu", onCtx);
       svg.removeEventListener("click", onClick);
+      svg.removeEventListener("pointerdown", onPress);
+      svg.removeEventListener("pointermove", onHover);
       svg.removeEventListener("pointerdown", onDown, true);
       removeEventListener("keydown", onKey);
       if (!opts.overlay) ov.remove();

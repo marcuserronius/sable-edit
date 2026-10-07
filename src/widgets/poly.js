@@ -2,7 +2,7 @@ import {Widgets} from '../registry.js';
 import {mk} from '../dom.js';
 import {rnd} from '../util.js';
 /* polygon / polyline, edit mode: vertex squares (drag to move), double-click an edge to add a vertex,
-   double-click a vertex to delete it. Moving the whole shape is the hub's job. */
+   double-click a vertex to delete it. Moving the whole shape is the body drag's job (body.js). */
 for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ctx=>{
   const el=ctx.el,closed=tag==='polygon',g=mk('g'),A=(e,o)=>{for(const k in o)e.setAttribute(k,o[k])}; ctx.overlay.append(g);
   const parse=()=>{const n=(el.getAttribute('points')||'').match(/[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g)||[],p=[];
@@ -29,7 +29,7 @@ for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ct
   function build(){
     g.replaceChildren();items=[];
     hit=mk(tag,{fill:'none',stroke:'transparent','stroke-width':12,'vector-effect':'non-scaling-stroke',style:'pointer-events:stroke;cursor:copy'});
-    hit.addEventListener('dblclick',e=>insert(ctx.toLocal(e)));g.append(hit);
+    hit.addEventListener('dblclick',e=>insert(ctx.toLocal(e)));hit.addEventListener('pointerdown',e=>ctx.grab(e,{defer:true}));g.append(hit);
     pts.forEach((_,i)=>{
       const h=mk('rect',{style:'pointer-events:all;cursor:move',fill:'var(--panel,#fff)',stroke:'var(--acc,#2f6fed)'});g.append(h);
       items.push({h,get:()=>pts[i],r:5,n:1}); 

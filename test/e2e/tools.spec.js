@@ -117,11 +117,11 @@ test('with a tool armed, pressing on an existing shape draws instead of selectin
   expect(await page.locator('circle.edit').first().getAttribute('cx')).toBe(before);
 });
 
-test('right-click on a selected shape opens the menu and does not trigger the hub', async ({ page }) => {
+test('right-click on a selected shape opens the menu and does not switch mode', async ({ page }) => {
   await page.goto('/demo/');
   await page.locator('rect.edit').first().click();
   const mode = await page.locator('#mode').textContent();
-  const h = await page.evaluate(() => { const r = document.querySelector('#art').lastElementChild.children[1].querySelector('circle').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+  const h = await page.evaluate(() => { const r = document.querySelector('rect.edit').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
   await page.mouse.click(h.x, h.y, { button: 'right' });
   await expect(page.getByRole('menu')).toHaveCount(1);
   await expect(page.locator('#mode')).toHaveText(mode);
