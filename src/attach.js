@@ -6,28 +6,66 @@ import {haloWidget} from './widgets/halo.js';
 import {bodyGrab} from './body.js';
 import {Tools} from './tools.js';
 import {openMenu as openMenuUI} from './menu.js';
+import {compilePolicy,checkWrites,canSet,modeOk,OPEN} from './policy.js';
 const MODES=['scale','rotate','edit'];
 export function attach(svg,opts={}){
   const PRIM=opts.selector||'path,rect,circle,ellipse,line,polyline,polygon,text', root=opts.root||svg;
   let ov=opts.overlay; if(!ov){ov=mk('g',{style:'pointer-events:none'});svg.append(ov)}
   const hs={}, on=(e,f)=>{(hs[e]??=[]).push(f)}, emit=(e,d)=>[...(hs[e]||[])].forEach(f=>f(d));
   if(opts.onSelect)on('select',opts.onSelect);if(opts.onCreate)on('create',d=>opts.onCreate(d.el)); if(opts.onChange)on('change',d=>opts.onChange(d.el,d.attr,d.src));
+  if(opts.onDenied)on('denied',d=>opts.onDenied(d.el,d));
+  let P=compilePolicy(opts.policy,{root}),lastDeny=''; // permissions: see src/policy.js. No policy = everything allowed, nothing checked
+  if(P)P.validate(root); // data-sable-policy typos throw here, not later
+  const perms=el=>P?P.resolve(el):OPEN, toolOk=id=>!P||P.toolOk(id);
   let sel=null,layer=null,halo=null,body=null,subs=[],pref=MODES.includes(opts.mode)?opts.mode:'scale';
   let tool='pointer',oneShot=false,gesture=null,swallow=false,menuCtl=null; // creation tools: see the 'Tools and context menu' section
 
   /* undo/redo: edits made in one pointer gesture (or one burst of typing) form one step */
   const undoS=[],redoS=[]; let gid=0;
-  const record=(el,attr,old,nw,src)=>{
-    const key=src+':'+(src==='widget'?gid:attr),now=Date.now(),last=undoS.at(-1);
-    if(last&&last.key===key&&(src==='widget'||now-last.t<800)){
+  const record=(el,attr,old,nw,src,own)=>{ // own: a key of its own (one batch = one step)
+    const key=own||src+':'+(src==='widget'?gid:attr),now=Date.now(),last=undoS.at(-1);
+    if(last&&last.key===key&&(src==='widget'||own||now-last.t<800)){
       const it=last.items.find(i=>i.el===el&&i.attr===attr);it?it.nw=nw:last.items.push({el,attr,old,nw});last.t=now;
     }else undoS.push({key,t:now,items:[{el,attr,old,nw}]});
     redoS.length=0;emit('history');
   };
-  const setAttr=(el,attr,v,src='app')=>{ // v === null removes the attribute
-    const old=el.getAttribute(attr),nw=v===null?null:String(v);if(old===nw)return;
-    nw===null?el.removeAttribute(attr):el.setAttribute(attr,nw);record(el,attr,old,nw,src);emit('change',{el,attr,src});
+  /* v === null removes the attribute. Returns false when the policy refused the write (and emits 'denied'); `cap` is the
+     capability the writer declares (move/scale/rotate gestures), `force` skips the policy (for host code outside it).
+     The policy may store something other than v (a range or a bounds box clamps it): read the attribute back if it matters.
+     Inside batch(fn) writes are only collected; when fn returns, the writes to each element are checked and applied as one
+     step, so a rect resize (x, y, width, height) is judged as the finished rect and not as four half-written ones. */
+  let pending=null,bid=0;
+  const bbox=el=>{try{const b=el.getBBox();return [b.x,b.y,b.x+b.width,b.y+b.height]}catch{return null}};
+  const setAttr=(el,attr,v,src='app',cap,force)=>{
+    const c={el,attr,nw:v===null?null:String(v),src,cap,force};
+    if(pending){pending.push(c);return true}
+    return flush([c]);
   };
+  const batch=(fn,own)=>{const q=pending=[];q.own=own;try{fn()}finally{pending=null}return flush(q)}; // own: history key, so the whole batch undoes as one step
+  function flush(q){
+    const by=new Map();let ok=true;
+    for(const c of q)(by.get(c.el)||by.set(c.el,[]).get(c.el)).push(c);
+    for(const [el,cs] of by){
+      const last=new Map(cs.map(c=>[c.attr,c])),gate=cs.filter(c=>!c.force); // last write to an attribute wins
+      const vals=new Map([...last].map(([a,c])=>[a,c.nw]));
+      if(P&&gate.length){
+        const r=checkWrites(perms(el),el.tagName,a=>el.getAttribute(a),gate.map(c=>({attr:c.attr,nw:c.nw,hint:c.cap})),{bbox:()=>bbox(el)});
+        if(!r.ok){
+          const c=gate.find(g=>g.attr===r.attr)||gate[0],k=gid+':'+r.cap;ok=false;
+          if(c.src!=='widget'||k!==lastDeny){lastDeny=k;emit('denied',{el,attr:r.attr,cap:r.cap,reason:r.reason,src:c.src})} // one event per gesture, not per pointermove
+          continue;
+        }
+        r.values.forEach((v,a)=>{if(!last.get(a).force)vals.set(a,v)});
+      }
+      const done=[];
+      for(const [attr,nw] of vals){
+        const old=el.getAttribute(attr);if(old===nw)continue;
+        nw===null?el.removeAttribute(attr):el.setAttribute(attr,nw);record(el,attr,old,nw,last.get(attr).src,q.own);done.push([attr,last.get(attr).src]);
+      }
+      done.forEach(([attr,src])=>emit('change',{el,attr,src}));
+    }
+    return ok;
+  }
   /* a created element is one history item {add,el,parent,next}: undo removes it, redo puts it back in place */
   const stepAdd=(i,dir)=>{
     if(dir>0){i.parent.insertBefore(i.el,i.next&&i.next.parentNode===i.parent?i.next:null);emit('create',{el:i.el,src:'history'})}
@@ -57,20 +95,20 @@ export function attach(svg,opts={}){
   const dm=m=>new DOMMatrix([m.a,m.b,m.c,m.d,m.e,m.f]),matrixFor=el=>dm(ov.getCTM().inverse().multiply(el.getCTM())); // DOMMatrix, so it composes with ownM()
   /* Edit modes. Every shape cycles scale -> rotate/skew -> edit; shapes with no editor of their own
      (only the catch-all fallback matches) cycle scale <-> rotate. `pref` is the user's last choice and is
-     kept across selections; `cur()` is what the selected shape can actually show. */
-  const modesFor=el=>{const e=Widgets.find(el);return e&&!e.generic?MODES:MODES.slice(0,2)};
+     kept across selections; `cur()` is what the selected shape can actually show (the policy can switch modes off). */
+  const modesFor=el=>{const e=Widgets.find(el),p=perms(el);return MODES.filter(m=>modeOk(p,m)&&(m!=='edit'||(e&&!e.generic)))};
   const cur=()=>{const ms=modesFor(sel);return ms.includes(pref)?pref:ms[0]};
   const unsub=()=>{subs.forEach(([e,f])=>{const a=hs[e],i=a?a.indexOf(f):-1;if(i>=0)a.splice(i,1)});subs=[]};
   const teardown=()=>{layer?.destroy();halo?.destroy();layer=halo=null;unsub();ov.replaceChildren()};
   let ctx=null;
   function build(){
-    teardown();const m=cur();
+    teardown();const m=cur();if(!m)return; // no mode available: nothing to draw
     // the grab halo goes first so it sits under the handles; path/polygon/polyline edit mode brings its own (it also owns double-click)
     halo=m==='edit'&&/^(path|polygon|polyline)$/.test(sel.tagName)?null:haloWidget(ctx);
     layer=m==='edit'?Widgets.find(sel).factory(ctx):transformLayer(ctx,m);
   }
   function select(el){
-    if(el===sel)return;
+    if(el===sel||(el&&!perms(el).selectable))return;
     body?.destroy();body=null;teardown();sel=el;ctx=null;
     if(tool==='pointer')svg.style.cursor=cursorWas;
     if(el){
@@ -80,7 +118,9 @@ export function attach(svg,opts={}){
         /* pointer in the parent's coordinate system: what the element's own `transform` is relative to */
         toParent(e){const o=toOverlay(e),q=new DOMPoint(o[0],o[1]).matrixTransform(matrixFor(el).multiply(ownM(el).inverse()).inverse());return [q.x,q.y]},
         bbox(){try{const b=el.getBBox();return {x:b.x,y:b.y,w:b.width,h:b.height}}catch{return null}},
-        set(a,v,src='widget'){setAttr(el,a,v,src)},
+        set(a,v,src='widget',cap){return setAttr(el,a,v,src,cap)}, // false = refused by the policy
+        batch, // batch(fn): the writes made inside fn are checked and applied together
+        can:c=>perms(el).can(c),get pin(){return perms(el).pin}, // what the policy allows this shape / which nodes it pins
         /* a press on this shape that a widget's own overlay element caught: drag = move, click = next mode (see body.js) */
         grab(e,o){if(!ctxClick(e))body.grab(e,o)}};
       body=bodyGrab(ctx,{cycle:()=>api.cycleMode(),moved:()=>layer&&layer.update&&layer.update(),
@@ -92,7 +132,7 @@ export function attach(svg,opts={}){
   /* Pressing a shape selects it and starts moving it in the same gesture; pressing the selected shape moves it, and a release
      without a drag switches mode (body.js). Clicking empty space deselects. Handles and widget proxies live in the overlay and
      never reach here. A bare click (no press, e.g. el.click() from a script) still selects. */
-  const pickAt=e=>{const t=e.target.closest?.(PRIM);return t&&root.contains(t)?t:null};
+  const pickAt=e=>{const t=e.target.closest?.(PRIM);return t&&root.contains(t)&&perms(t).selectable?t:null};
   const onPress=e=>{
     if(e.button!==0||ctxClick(e)||tool!=='pointer'||gesture||ov.contains(e.target))return;
     const t=pickAt(e);if(!t)return;
@@ -104,7 +144,7 @@ export function attach(svg,opts={}){
   if(opts.pick!==false)svg.addEventListener('click',onClick);
   const onHover=e=>{ // the selected shape's body is a move handle: say so
     if(tool!=='pointer'||gesture||(body&&body.busy))return;
-    svg.style.cursor=sel&&!ov.contains(e.target)&&pickAt(e)===sel?'move':cursorWas;
+    svg.style.cursor=sel&&!ov.contains(e.target)&&pickAt(e)===sel&&perms(sel).can('transform.move')?'move':cursorWas;
   };
   svg.addEventListener('pointermove',onHover);
   /* ---- Tools and context menu ----
@@ -116,7 +156,7 @@ export function attach(svg,opts={}){
   const hostEl=()=>{const c=opts.createIn;return (typeof c==='string'?svg.querySelector(c):c)||root};
   const shapeAttrs=()=>({fill:'#d6eaf8',stroke:'#2874a6','stroke-width':2,...opts.shapeAttrs});
   function setTool(id,once=false){
-    if(gesture)return;const T=Tools.get(id);if(id!=='pointer'&&!T)return;
+    if(gesture)return;const T=Tools.get(id);if(id!=='pointer'&&(!T||!toolOk(id)))return;
     once=once&&id!=='pointer';if(id===tool&&once===oneShot)return;
     tool=id;oneShot=once;svg.style.cursor=T?T.cursor||'crosshair':cursorWas;
     if(T)select(null);emit('tool',id);
@@ -146,7 +186,7 @@ export function attach(svg,opts={}){
   }
   const menuB=[]; // builders: ({x,y,target,editor}) => [items]; groups are separated automatically
   const toolItems=()=>{
-    const ts=Tools.list;if(!ts.length)return [];
+    const ts=Tools.list.filter(d=>toolOk(d.id));if(!ts.length)return [];
     return [{label:'Use Once',submenu:ts.map(d=>({label:d.label,checked:oneShot&&tool===d.id,action:()=>setTool(d.id,true)}))},
       {label:'Switch Tool',submenu:[{label:'Pointer',checked:tool==='pointer',action:()=>setTool('pointer')},
         ...ts.map(d=>({label:d.label,checked:!oneShot&&tool===d.id,action:()=>setTool(d.id)}))]}];
@@ -162,13 +202,24 @@ export function attach(svg,opts={}){
     if(openMenu(e.clientX,e.clientY,t&&root.contains(t)?t:null))e.preventDefault();
   };
   svg.addEventListener('pointerdown',toolDown,true);svg.addEventListener('contextmenu',onCtx);
-  const api={select,set:setAttr,undo,redo,clearHistory,get canUndo(){return undoS.length>0},get canRedo(){return redoS.length>0},get selected(){return sel},on,
+  const api={select,set(el,attr,val,src,o){return setAttr(el,attr,val,src,undefined,o&&o.force)},
+    setMany(el,attrs,src,o){return batch(()=>{for(const a in attrs)setAttr(el,a,attrs[a],src,undefined,o&&o.force)},'many:'+(++bid))}, // several attributes: checked together, undone together
+    undo,redo,clearHistory,get canUndo(){return undoS.length>0},get canRedo(){return redoS.length>0},get selected(){return sel},on,
     refresh(){emit('view')}, changed(el,attr,src='app'){emit('change',{el,attr,src})},
     destroy(){closeMenu();setTool('pointer');select(null);svg.removeEventListener('pointerdown',toolDown,true);svg.removeEventListener('contextmenu',onCtx);svg.removeEventListener('click',onClick);svg.removeEventListener('pointerdown',onPress);svg.removeEventListener('pointermove',onHover);svg.removeEventListener('pointerdown',onDown,true);removeEventListener('keydown',onKey);if(!opts.overlay)ov.remove()},
     get mode(){return sel?cur():pref},set mode(m){if(!MODES.includes(m)||m===api.mode)return;pref=m;if(sel&&cur()!==m)return;sel&&build();emit('mode',m)},
     get modes(){return sel?modesFor(sel):MODES},
-    get tool(){return tool},set tool(id){setTool(id)},useTool(id){setTool(id,true)},get tools(){return Tools.list.map(({id,label})=>({id,label}))},
+    get tool(){return tool},set tool(id){setTool(id)},useTool(id){setTool(id,true)},get tools(){return Tools.list.filter(d=>toolOk(d.id)).map(({id,label})=>({id,label}))},
     openMenu,closeMenu,addMenu(f){menuB.push(f);return ()=>{const i=menuB.indexOf(f);i>=0&&menuB.splice(i,1)}},
-    cycleMode(){if(!sel)return;const ms=modesFor(sel);pref=ms[(ms.indexOf(cur())+1)%ms.length];build();emit('mode',pref)}};
+    /* permissions: can([el,] capability) and canSet([el,] attr) answer for host UIs (el defaults to the selected shape);
+       policy (get/set) swaps the whole policy at runtime */
+    can(a,b){const el=typeof a==='string'?sel:a;return !!el&&perms(el).can(typeof a==='string'?a:b)},
+    canSet(a,b){const el=typeof a==='string'?sel:a;return !!el&&canSet(perms(el),el.tagName,typeof a==='string'?a:b)},
+    range(a,b){const el=typeof a==='string'?sel:a;return el?perms(el).range(typeof a==='string'?a:b):null},  // [min, max] (null = open end) the policy allows for an attribute, or null
+    bounds(el=sel){return el&&perms(el).bounds?{x:perms(el).bounds[0],y:perms(el).bounds[1],width:perms(el).bounds[2]-perms(el).bounds[0],height:perms(el).bounds[3]-perms(el).bounds[1]}:null},
+    snap(el=sel){const s=el&&perms(el).snap;return s?{x:s[0],y:s[1]}:null}, // the grid step the policy imposes on the shape, in its own coordinates, or null
+    get policy(){return P?P.spec:null},
+    set policy(spec){const np=compilePolicy(spec,{root});if(np)np.validate(root);P=np;if(tool!=='pointer'&&!toolOk(tool))setTool('pointer');if(!sel)return;if(!perms(sel).selectable)select(null);else build()},
+    cycleMode(){if(!sel)return;const ms=modesFor(sel);if(ms.length<2)return;pref=ms[(ms.indexOf(cur())+1)%ms.length];build();emit('mode',pref)}};
   return api;
 }

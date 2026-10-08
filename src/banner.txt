@@ -6,13 +6,65 @@
            onSelect(el), onChange(el, attr, src), onCreate(el),
            createIn (element or selector: where new shapes go, default root), shapeAttrs (attributes for new shapes, default a light
            fill + 2px stroke; if you pass `selector`, include something in shapeAttrs that matches it, e.g. {class:'edit'}),
-           menu (default true: right-click / Ctrl-click opens the context menu; false leaves the browser's menu alone)
+           menu (default true: right-click / Ctrl-click opens the context menu; false leaves the browser's menu alone),
+           policy (permissions, see 'Permissions' below; default none = everything allowed), onDenied(el, {attr, cap, reason, src})
   Instance: select(el|null), selected, refresh() (call after you pan/zoom), changed(el, attr),
-            set(el, attr, val, src) (undoable write; val null removes the attribute), undo(), redo(), clearHistory(),
+            set(el, attr, val, src[, {force}]) (undoable write; val null removes the attribute; returns false if the policy refused it,
+            force:true skips the policy; a range or bounds clamp may store something other than val, so read it back if it matters),
+            setMany(el, {attr: val, ...}[, src, {force}]) (several attributes, checked together and undone together), undo(), redo(), clearHistory(),
+            can([el,] capability), canSet([el,] attr) (el defaults to the selected shape; canSet('style:fill') asks about one style
+            property), range([el,] attr) ([min, max], null = open end, or null), bounds([el]) ({x,y,width,height} or null),
+            snap([el]) ({x,y} grid step or null),
+            policy (get/set: swap the whole policy at runtime),
             canUndo/canRedo, mode (get/set), modes (what the selected shape offers), cycleMode(),
             tool (get/set: 'pointer' or a tool id, stays until changed), useTool(id) (one use, then back to 'pointer'), tools (what is registered),
             openMenu(x,y), closeMenu(), addMenu(({x,y,target,editor}) => [items]) (returns a remover),
-            on('select'|'change'|'history'|'mode'|'tool'|'create'|'remove', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
+            on('select'|'change'|'history'|'mode'|'tool'|'create'|'remove'|'denied', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
+  Permissions: policy is a list of rules, applied in order; nothing is allowed until a rule grants it, and a shape nothing is granted to
+    can't be selected (so {select:'.edit', can:'all'} is the old 'these shapes are editable'). Pass {rules:[...], create:false|[tool ids]}
+    to also limit which creation tools the menu offers. A rule is {select, can, cannot, attrs, pin, bounds, ranges, snap}:
+      select  CSS selector | (el)=>bool | element | array of those (omitted = every shape)
+      can / cannot  capabilities: transform.move|scale|rotate|skew, geometry.edit (the edit mode), nodes.insert|delete (need geometry.edit),
+              attrs.edit (every other attribute: fill, stroke, style, class...); 'all' and 'group.*' work. Within a rule cannot wins; a later rule wins.
+      attrs   {allow:[globs], deny:[globs]} narrows attrs.edit; 'stroke*' blocks the attribute and style="stroke..." alike
+      pin     'endpoints' (first/last node of an open path/polyline; both ends of a line) and/or node indices (negative = from the end);
+              a pinned node can't move or be deleted (its bezier handles stay free). Any pin turns the shape's transform.* off, and an index pin
+              also turns nodes.insert/delete off. Locked handles are drawn grey; hidden modes and handles are simply not offered.
+      bounds  {x,y,width,height} (or [x,y,width,height]) in the shape's parent coordinate system (the space its transform maps into): nodes
+              (a path's anchors and bezier handles, a polygon's vertices, a rect's corners, an ellipse's extent) may not leave it. Stroke
+              width isn't counted. Where there is one obvious answer the edit is clamped: a dragged node stops at the wall and slides along
+              it, a move stops at the wall, a resize keeps the far edges. Scale / rotate / skew that would cross it, and arcs that would bulge
+              out, are refused (the pointer just stops). An edit that doesn't make an already out-of-bounds shape worse is allowed. text, g
+              and other shapes are measured with getBBox. null clears an earlier rule's bounds. New shapes from the creation tools aren't
+              clamped as they're drawn; the first edit afterwards is.
+      snap    10 | [10, 5] | {x, y}: a grid step in the shape's own coordinates (the numbers stored in d, points, x, cx...). Whatever an edit
+              moves lands on the grid: path anchors and bezier handles, polygon vertices, rect edges, line ends, circle / ellipse centres and the
+              edge a radius handle drags. Arc radii and flags aren't snapped. Only coordinates the edit changes are snapped (an off-grid shape
+              stays as it is until you touch that part). A move shifts the whole shape by one amount, and a dragged node snaps together with the
+              bezier handles that travel with it, so nothing is squashed or bent. Adding or deleting a node doesn't snap. Snapping is forced, not a
+              user toggle, and applies to ed.set() too. The order is snap, then pins and capabilities, then ranges, then bounds: a range or a wall
+              that is off the grid wins, and a pinned node still can't move (a nudge that snaps back onto it is no move at all). null clears.
+      ranges  {attr: [min, max]} (null = open end): numeric attribute values are clamped ('r': [5,50]), and style="stroke-width:..." is limited
+              the same way; keys are globs. A value that isn't a number, or removing a ranged attribute, is refused. {} clears.
+    Markup: for embeds with no JS config, a policy list may contain the string 'markup' (policy: 'markup' is the short form), which
+    reads data-sable-policy="..." attributes from the SVG itself. Where 'markup' sits in the list decides who wins (rules after it
+    override the markup, rules before it are overridden by it). An element's declarations are its ancestors' (outermost first, up to the
+    attached root) then its own, so one on a <g> covers the group and one on the <svg> is the default for the drawing. Clauses are
+    separated by ';':   geometry.edit, nodes.*  (bare words grant; -nodes.delete takes away; can: / cannot: spell it out),
+    attrs-allow: fill, stroke*   attrs-deny: style   (globs; empty clears),   pin: endpoints, 0, -1   (empty clears),
+    bounds: 0 0 600 400   ('none' clears),   range: r=5..50   (either end may be empty; 'range: none' clears),   snap: 10  or  snap: 10 5   ('none' clears). Example:
+      <path id="curve" data-sable-policy="geometry.edit, nodes.*; attrs-deny: stroke*, style; pin: endpoints; bounds: 0 0 600 400" .../>
+    Markup is read only when 'markup' is listed: SVG that came from users must not be able to grant itself powers, so enable it only for
+    markup the host wrote. The attribute itself can't be written through the editor (ed.set force:true is the host's way). A declaration
+    that doesn't parse throws when the editor attaches (or the policy is set); one that goes bad later switches everything off for the shapes
+    it covers and says so once in the console. Edits to the attributes count from the next check; an open selection keeps its handles until
+    it is reselected. Bounds and pins on an ancestor apply to its descendants unchanged, so put them on groups whose children sit directly in them.
+    A refusal reports reason 'capability' | 'attribute' | 'range' | 'pinned' | 'bounds' in 'denied'. Widget authors: ctx.set returns false when
+    a write was refused; ctx.batch(fn) makes the writes inside fn one step, so bounds are judged on the finished shape (a rect resize writes
+    x, y, width and height, and must not be judged on each half-written state); after a write, read the attribute back if the policy may clamp it.
+    Every write goes through the policy (widgets, move/scale/rotate gestures, ed.set), so it holds even for edits that don't come from a handle.
+    It guards the user, not the page: script that can reach the DOM can still write attributes. For a real guarantee, run checkWrite() from
+    src/policy.js (pure, works in Node) on the server. Mistakes in a policy (unknown capability, rule key typo) throw at attach time.
   Context menu: right-click (Ctrl-click on a Mac) anywhere on the canvas. 'Use Once' arms a tool for one shape, then returns to the pointer;
     'Switch Tool' keeps the tool until you pick Pointer (or press Esc). Items are {label, action, checked, disabled, submenu:[...]} or {sep:1}.
   Tools:    the pointer tool is the editing behaviour described below; other tools create shapes. Built in: circle (press = centre, drag = radius),

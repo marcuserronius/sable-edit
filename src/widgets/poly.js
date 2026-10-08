@@ -1,14 +1,17 @@
 import {Widgets} from '../registry.js';
 import {mk} from '../dom.js';
 import {rnd} from '../util.js';
+import {polyNodes,pinnedIdx} from '../policy.js';
 /* polygon / polyline, edit mode: vertex squares (drag to move), double-click an edge to add a vertex,
-   double-click a vertex to delete it. Moving the whole shape is the body drag's job (body.js). */
+   double-click a vertex to delete it. Moving the whole shape is the body drag's job (body.js). The policy can take adding and
+   deleting away (nodes.insert / nodes.delete) and pin vertices: a pinned vertex is drawn grey and can't be dragged or deleted. */
 for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ctx=>{
   const el=ctx.el,closed=tag==='polygon',g=mk('g'),A=(e,o)=>{for(const k in o)e.setAttribute(k,o[k])}; ctx.overlay.append(g);
   const parse=()=>{const n=(el.getAttribute('points')||'').match(/[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g)||[],p=[];
     for(let i=0;i+1<n.length;i+=2)p.push([+n[i],+n[i+1]]);return p};
-  let pts=parse(),items=[],hit,dead=false,mv0=false,mv1=false;
-  const write=()=>ctx.set('points',pts.map(p=>rnd(p[0])+','+rnd(p[1])).join(' '));
+  let pts=parse(),items=[],hit,dead=false,mv0=false,mv1=false,pinned=new Set();
+  /* the policy can refuse a write (show what the document really holds) or store something else (a bounds clamp): adopt it, in place so a drag in progress keeps its array */
+  const write=()=>{const v=pts.map(p=>rnd(p[0])+','+rnd(p[1])).join(' '),r=ctx.set('points',v);if(r===false){pts=parse();build()}else if(el.getAttribute('points')!==v)pts.splice(0,pts.length,...parse())};
   function drag(h,start,move){
     h.addEventListener('pointerdown',e=>{
       e.stopPropagation();h.setPointerCapture(e.pointerId);const p0=ctx.toLocal(e);start();mv0=mv1;mv1=false;
@@ -28,13 +31,15 @@ for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ct
   }
   function build(){
     g.replaceChildren();items=[];
-    hit=mk(tag,{fill:'none',stroke:'transparent','stroke-width':12,'vector-effect':'non-scaling-stroke',style:'pointer-events:stroke;cursor:copy'});
-    hit.addEventListener('dblclick',e=>insert(ctx.toLocal(e)));hit.addEventListener('pointerdown',e=>ctx.grab(e,{defer:true}));g.append(hit);
+    hit=mk(tag,{fill:'none',stroke:'transparent','stroke-width':12,'vector-effect':'non-scaling-stroke',style:'pointer-events:stroke;cursor:'+(ctx.can('nodes.insert')?'copy':'move')});
+    hit.addEventListener('dblclick',e=>ctx.can('nodes.insert')&&insert(ctx.toLocal(e)));hit.addEventListener('pointerdown',e=>ctx.grab(e,{defer:ctx.can('nodes.insert')}));g.append(hit);
+    pinned=new Set(pinnedIdx(polyNodes(pts,closed),ctx.pin));
     pts.forEach((_,i)=>{
       const h=mk('rect',{style:'pointer-events:all;cursor:move',fill:'var(--panel,#fff)',stroke:'var(--acc,#2f6fed)'});g.append(h);
       items.push({h,get:()=>pts[i],r:5,n:1}); 
+      if(pinned.has(i)){h.style.cursor='not-allowed';h.setAttribute('fill','#ddd');h.setAttribute('stroke','#888');h.addEventListener('pointerdown',e=>e.stopPropagation());return}
       drag(h,()=>{},p=>{pts[i]=p});
-      h.addEventListener('dblclick',e=>{e.stopPropagation();if(mv0||mv1||pts.length<=(closed?3:2))return;pts.splice(i,1);write();build()});
+      h.addEventListener('dblclick',e=>{e.stopPropagation();if(!ctx.can('nodes.delete')||mv0||mv1||pts.length<=(closed?3:2))return;pts.splice(i,1);write();build()});
     });
     layout();
   }

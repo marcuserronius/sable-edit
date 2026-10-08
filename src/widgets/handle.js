@@ -5,7 +5,8 @@ export function handleWidget(ctx,specs,outline){
   const items=specs.map(sp=>{
     const el=mk(sp.sq?'rect':'circle',{style:'pointer-events:all;cursor:move',fill:sp.sq?'var(--panel,#fff)':'var(--acc,#2f6fed)',stroke:'var(--acc,#2f6fed)'}); g.append(el);
     el.addEventListener('pointerdown',e=>{
-      e.stopPropagation();el.setPointerCapture(e.pointerId);const p0=ctx.toLocal(e);sp.start&&sp.start(p0);
+      e.stopPropagation();if(sp.locked&&sp.locked())return; // a pinned handle (sp.locked) is drawn grey and doesn't drag
+      el.setPointerCapture(e.pointerId);const p0=ctx.toLocal(e);sp.start&&sp.start(p0);
       const mv=ev=>sp.drag(ctx.toLocal(ev),p0,ev);
       el.addEventListener('pointermove',mv);el.addEventListener('pointerup',()=>el.removeEventListener('pointermove',mv),{once:true});
     });
@@ -19,7 +20,8 @@ export function handleWidget(ctx,specs,outline){
         A(ols[i],{points:poly.map(T).join(' '),'stroke-width':w,'stroke-dasharray':i?ctx.px(1.5)+' '+ctx.px(2.5):ctx.px(5)+' '+ctx.px(3)});
       });
     }
-    items.forEach(({el,sp})=>{const [x,y]=T(sp.get()),r=ctx.px(sp.sq?5:4.5);
+    items.forEach(({el,sp})=>{const [x,y]=T(sp.get()),r=ctx.px(sp.sq?5:4.5),lk=sp.locked&&sp.locked();
+      el.style.cursor=lk?'not-allowed':'move';el.setAttribute('fill',lk?'#ddd':sp.sq?'var(--panel,#fff)':'var(--acc,#2f6fed)');el.setAttribute('stroke',lk?'#888':'var(--acc,#2f6fed)');
       A(el,sp.sq?{x:x-r,y:y-r,width:2*r,height:2*r,'stroke-width':w}:{cx:x,cy:y,r,'stroke-width':w})});
   }
   ctx.on('view',()=>!dead&&layout()); ctx.on('change',()=>!dead&&layout()); layout();

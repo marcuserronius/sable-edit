@@ -6,18 +6,19 @@ const ACC='var(--acc,#2f6fed)',PANEL='var(--panel,#fff)',r6=v=>+v.toFixed(6);
 /* resize cursor closest to a screen-space direction */
 const cursor=a=>['ew','nwse','ns','nesw'][Math.round((((a%Math.PI)+Math.PI)%Math.PI)/(Math.PI/4))%4]+'-resize';
 const nz=s=>Math.abs(s)<.001?(s<0?-.001:.001):s; // never collapse to a singular matrix
+const CAP={sc:'transform.scale',sx:'transform.scale',sy:'transform.scale',rot:'transform.rotate',kx:'transform.skew',ky:'transform.skew'}; // what each handle needs; the policy hides the rest
 /* Generic transform layers, for any element. Both write the element's own `transform` attribute and
    show the bounding box of its geometry in the element's own (possibly rotated/skewed) frame.
      kind 'scale'  : corners resize proportionally along the diagonal, edge midpoints resize one axis; the opposite side stays put
      kind 'rotate' : corners rotate about the box centre (Shift = 15 degree steps), edge midpoints skew parallel to their edge */
 export function transformLayer(ctx,kind){
   const el=ctx.el,g=mk('g'),A=(e,o)=>{for(const k in o)e.setAttribute(k,o[k])},ol=mk('polygon',{fill:'none',stroke:ACC});
-  g.append(ol);ctx.overlay.append(g);let dead=false;
+  g.append(ol);ctx.overlay.append(g);let dead=false,cap=null; // cap: the capability of the handle being dragged
   const frame=(e,hx,hy)=>{ // pointer mapper frozen to the element's frame at gesture start
     const inv=ctx.matrix().inverse(),loc=ev=>{const o=ctx.toOverlay(ev),q=new DOMPoint(o[0],o[1]).matrixTransform(inv);return [q.x,q.y]},p0=loc(e);
     return {b:ctx.bbox(),t0:el.getAttribute('transform')||'',dirty:false,at:ev=>{const p=loc(ev);return [hx+p[0]-p0[0],hy+p[1]-p0[1]]}};
   };
-  const put=(S,pre,post)=>{ctx.set('transform',[pre,S.t0,post].filter(Boolean).join(' '));S.dirty=true};
+  const put=(S,pre,post)=>{ctx.set('transform',[pre,S.t0,post].filter(Boolean).join(' '),'widget',cap);S.dirty=true};
   const begin={
     sc:(ix,iy)=>e=>{const b=ctx.bbox(),hx=b.x+b.w*ix,hy=b.y+b.h*iy,ax=b.x+b.w*(1-ix),ay=b.y+b.h*(1-iy),vx=hx-ax,vy=hy-ay,L=vx*vx+vy*vy,S=frame(e,hx,hy);
       return {S,move:ev=>{if(L<1e-12)return;const p=S.at(ev),s=nz(((p[0]-ax)*vx+(p[1]-ay)*vy)/L);
@@ -44,9 +45,9 @@ export function transformLayer(ctx,kind){
     h.append(mk('circle',{r:8,fill:PANEL,stroke:ACC,'stroke-width':1.2}),mk('path',{d:role==='rot'?ROT:LIN,fill:'none',stroke:ACC,'stroke-width':1.4,'stroke-linecap':'round','stroke-linejoin':'round'}));
     g.append(h);specs.push({ix,iy,role,g:h});
     h.addEventListener('pointerdown',e=>{
-      e.stopPropagation();h.setPointerCapture(e.pointerId);const G=begin[role](ix,iy)(e);if(!G)return;
+      e.stopPropagation();h.setPointerCapture(e.pointerId);cap=CAP[role];const G=begin[role](ix,iy)(e);if(!G)return;
       const mv=ev=>G.move(ev);h.addEventListener('pointermove',mv);
-      h.addEventListener('pointerup',()=>{h.removeEventListener('pointermove',mv);if(G.S.dirty)ctx.set('transform',fmtTransform(ownM(el)))},{once:true});
+      h.addEventListener('pointerup',()=>{h.removeEventListener('pointermove',mv);if(G.S.dirty)ctx.set('transform',fmtTransform(ownM(el)),'widget',cap)},{once:true});
     });
   }
   function layout(){
@@ -64,7 +65,7 @@ export function transformLayer(ctx,kind){
       s.g.style.cursor=s.role==='rot'?'grab':cursor(a);
       // a handle whose axis has no extent (e.g. vertical scale of a horizontal line) can't do anything: hide it rather than let it sit on the shape's centre, where it would block grabbing the shape
       const e=1e-9,live={sc:b.w>e||b.h>e,sx:b.w>e,sy:b.h>e,rot:true,kx:b.h>e,ky:b.w>e}[s.role];
-      s.g.style.display=live?'':'none';
+      s.g.style.display=live&&ctx.can(CAP[s.role])?'':'none';
     });
   }
   ctx.on('view',()=>!dead&&layout());ctx.on('change',()=>!dead&&layout());layout();

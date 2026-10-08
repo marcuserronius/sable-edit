@@ -1,14 +1,24 @@
 import {Widgets} from '../registry.js';
 import {mk} from '../dom.js';
 import {parsePath,arcGeom,arcFit,dc,split} from '../path-math.js';
+import {pathNodes,pinnedIdx} from '../policy.js';
 /* Path widget: nodes (squares) + bezier handles (dots). Drag to edit; Shift while dragging a
-   cubic handle mirrors its partner; double-click the path to add a node, a node to delete it. */
+   cubic handle mirrors its partner; double-click the path to add a node, a node to delete it. The policy can take those two
+   away (nodes.insert / nodes.delete) and pin nodes: a pinned node is drawn grey and can't be dragged or deleted (its bezier
+   handles stay free). */
 Widgets.register(el=>el.tagName==='path',ctx=>{
   const el=ctx.el,g=mk('g'); ctx.overlay.append(g);
-  let segs=parsePath(el.getAttribute('d')||''),items=[],lines=[],hit,gh,dead=false,mv0=false,mv1=false,act=-1,arcs=[]; // mv*: did the last two gestures drag?
+  let segs=parsePath(el.getAttribute('d')||''),items=[],lines=[],hit,gh,dead=false,mv0=false,mv1=false,act=-1,arcs=[],pinned=new Set(); // mv*: did the last two gestures drag? pinned: segment indices of pinned nodes
   const f=v=>+v.toFixed(3), A=(e,o)=>{for(const k in o)e.setAttribute(k,o[k])};
   const ser=()=>segs.map(s=>s.t==='Z'?'Z':s.t+(s.arc?s.arc.join(' ')+' ':'')+s.pts.flat().map(f).join(' ')).join(' ');
-  const write=()=>ctx.set('d',ser());
+  /* The policy can refuse a write (show what the document really holds) or store something else (a bounds clamp): adopt it.
+     Adopting is done in place, so a drag in progress keeps working on the same segment objects. */
+  const sync=()=>{
+    const n=parsePath(el.getAttribute('d')||'');
+    if(n.length!==segs.length||n.some((q,i)=>q.t!==segs[i].t)){segs=n;build();return}
+    n.forEach((q,i)=>{segs[i].pts=q.pts;if(q.arc)segs[i].arc=q.arc});
+  };
+  const write=()=>{const v=ser(),r=ctx.set('d',v);if(r===false){segs=parsePath(el.getAttribute('d')||'');build()}else if(el.getAttribute('d')!==v)sync()};
   const prevPt=i=>{for(let j=i-1;j>=0;j--)if(segs[j].t!=='Z')return segs[j].pts.at(-1);return segs[i].pts[0]};
   const startOf=i=>{for(let j=i;j>=0;j--)if(segs[j].t==='M')return segs[j].pts[0]};
   function bind(h,onStart,onMove){
@@ -34,13 +44,17 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     const h=mk('rect',{style:'pointer-events:all;cursor:move',fill:'var(--panel,#fff)',stroke:'var(--acc,#2f6fed)'});
     items.push({el:h,get:()=>s.pts.at(-1),r:5,n:1}); gh.append(h);
     let refs=[];
+    if(pinned.has(i)){ // locked: grey, no drag, no delete; an arc's end node still activates its ellipse
+      h.style.cursor='not-allowed';h.setAttribute('fill','#ddd');h.setAttribute('stroke','#888');
+      h.addEventListener('pointerdown',e=>{e.stopPropagation();if(s.t==='A'){act=i;layout()}});return;
+    }
     bind(h,()=>{ // a node carries its adjacent bezier handles along
       if(s.t==='A'){act=i;layout()}
       const nx=segs[i+1]; refs=[[s,s.pts.length-1]]; if(s.t==='C')refs.push([s,1]); if(nx?.t==='C')refs.push([nx,0]);
       refs=refs.map(([q,k])=>[q,k,[...q.pts[k]]]);
     },(p,p0)=>{const dx=p[0]-p0[0],dy=p[1]-p0[1];refs.forEach(([q,k,o])=>q.pts[k]=[o[0]+dx,o[1]+dy])});
     h.addEventListener('dblclick',e=>{
-      e.stopPropagation(); if(mv0||mv1||segs.filter(q=>q.t!=='Z').length<3)return;
+      e.stopPropagation(); if(!ctx.can('nodes.delete')||mv0||mv1||segs.filter(q=>q.t!=='Z').length<3)return;
       if(s.t==='M'){const n=segs[i+1]; if(!n||n.t==='Z')return; n.t='M';n.pts=[n.pts.at(-1)];delete n.arc}
       segs.splice(i,1);write();build();
     });
@@ -89,9 +103,9 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
       p=>{s.arc=arcFit(P(),s.pts[0],s.arc,'flip',[p[0]-offm[0],p[1]-offm[1]])});
   }
   function build(){
-    g.replaceChildren();items=[];lines=[];arcs=[];if(!(segs[act]&&segs[act].t==='A'))act=segs.findIndex(q=>q.t==='A');
-    hit=mk('path',{fill:'none',stroke:'transparent','stroke-width':12,'vector-effect':'non-scaling-stroke',style:'pointer-events:stroke;cursor:copy'});
-    hit.addEventListener('dblclick',e=>insert(ctx.toLocal(e))); hit.addEventListener('pointerdown',e=>ctx.grab(e,{defer:true})); g.append(hit); gh=mk('g'); // stroke press: drag moves the path, click switches mode (after the double-click window)
+    g.replaceChildren();items=[];lines=[];arcs=[];const pn=pathNodes(segs);pinned=new Set(pinnedIdx(pn,ctx.pin).map(k=>pn.seg[k]));if(!(segs[act]&&segs[act].t==='A'))act=segs.findIndex(q=>q.t==='A');
+    hit=mk('path',{fill:'none',stroke:'transparent','stroke-width':12,'vector-effect':'non-scaling-stroke',style:'pointer-events:stroke;cursor:'+(ctx.can('nodes.insert')?'copy':'move')});
+    hit.addEventListener('dblclick',e=>ctx.can('nodes.insert')&&insert(ctx.toLocal(e))); hit.addEventListener('pointerdown',e=>ctx.grab(e,{defer:ctx.can('nodes.insert')})); g.append(hit); gh=mk('g'); // stroke press: drag moves the path, click switches mode (after the double-click window)
     segs.forEach((s,i)=>{
       if(s.t==='C'){ln(()=>prevPt(i),()=>s.pts[0]);ln(()=>s.pts[1],()=>s.pts[2]);ctl(s,0,i);ctl(s,1,i)}
       if(s.t==='Q'){ln(()=>prevPt(i),()=>s.pts[0]);ln(()=>s.pts[0],()=>s.pts[1]);ctl(s,0,i)}
