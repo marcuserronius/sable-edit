@@ -31,7 +31,7 @@ test('clicking empty space deselects', async ({ page }) => {
   await expect(page.locator('#readout')).toHaveText('nothing selected');
 });
 
-/* ---- edit modes: scale -> rotate/skew -> edit, cycled by clicking the selected shape ---- */
+/* ---- edit modes: scale <-> rotate/skew by clicking the selected shape; edit mode by double-click (see editmode.spec.js) ---- */
 // the middle of a shape's screen box: a point on the body of the shapes these tests use
 const body = (page, sel) => page.evaluate(s => {
   const r = document.querySelector(s).getBoundingClientRect();
@@ -45,11 +45,11 @@ const drag = async (page, from, to) => {
   await page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 3 }); await page.mouse.move(to.x, to.y, { steps: 5 }); await page.mouse.up();
 };
 
-test('clicking the selected shape cycles scale -> rotate -> edit -> scale', async ({ page }) => {
+test('clicking the selected shape toggles scale <-> rotate', async ({ page }) => {
   await page.goto('/demo/');
   await page.locator('rect.edit').first().click();
   await expect(page.locator('#mode')).toHaveText('mode: scale');
-  for (const m of ['rotate', 'edit', 'scale']) {
+  for (const m of ['rotate', 'scale', 'rotate']) {
     const h = await body(page, 'rect.edit'); await page.mouse.click(h.x, h.y);
     await expect(page.locator('#mode')).toHaveText('mode: ' + m);
   }

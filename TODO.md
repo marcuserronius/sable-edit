@@ -22,38 +22,54 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
 
 
 # Future improvements:
+- DONE (stage 1): clicking the selected shape toggles scale <-> rotate/skew only; edit mode is entered by double-click, long-press (touch/pen)
+  or `ed.edit()`, and left with Esc (edit -> scale -> deselect). Nothing waits for a possible double-click any more.
+- Stage 2: merge edit mode into the tools, so the "create X" tool is also the "edit X" tool (a double-click arms the shape's own tool on it):
+  - Needs the pen tools first (path, polygon, polyline): a tool that lives past one press-drag-release, click-to-add-nodes, finish on
+    Enter / double-click / Esc; the same lifecycle change the merge needs
+  - Decide sticky vs once: if tools were sticky by default (stay armed, Esc to leave), "once" is just a flag that leaves the tool after one
+    object; the editor would attach to the object just made either way, so the double standard may not be worth it
+  - Press on an object of the tool's own type edits it; anywhere else creates (so a new rect can't start on top of an existing rect)
+  - Create and edit stay separate permissions (a host may allow editing existing paths but not drawing new ones)
+  - `ed.mode = 'edit'` and the `mode` event keep working, reporting edit while an edit tool is active
 - path editor:
-  - Implement selection of segments and nodes (should pertain to polygons and 
-    polylines as well)
-    - Implement deletion of selected segments and nodes via delete/backspace
-    - Only display handles that pertain to selected nodes or segments
-  - Handling of symmetric/partially symmetric node handles:
-    - If handles are fully symmetric (same length, and lying on the same line 
-      with the node), use the smooth variant of the command, S/s and T/t
-      - This should be easy. If they are made symmetric (by holding shift), 
-        convert them to the smooth variant, and continue to treat them that way
-    - If handles are partially symmetric (different lengths, but lying on the 
-      same line with the node), lock them to remain at the same relative angles
-      when editing.
-    - Determine a good way to allow symmetric handles to become corner handles
-      - Context menu toggle?
-      - Shift reverses current behavior instead of just making them snap?
-  - Auto-convert between H/h, V/v, and L/l, changing to most efficient one when
-    changes are made
-    - Other segments keep their type unless explicitly changed.
-  - Context menu click on segments offers to change segment type
-    - When changing between curve types, calculate best fit from old curve
-      - Simple in the case of quadratic to cubic, others will approximate
-    - When changing from a straight line to a curve:
-      - Beziers will turn into a straight line with extended handles; quadratics
-        with their handles at the midpoint, cubics probably should be at either 
-        the 1/3 and 2/3 points, or 1/4 and 3/4 points
-      - A straight arc has its centerpoint at infinity, so it should be turned 
-        into a curve
-        - If possible, make the curve tangent to nearby line segments
-        - If not possible or infeasible, choose a reasonable default value to 
-          set it at
-          - Perhaps something like a 1 radian arc?
+  - DONE (paths: nodes and segments; polygons/polylines: nodes only): selection
+    of segments and nodes, deletion via delete/backspace, handles shown only for
+    the selection. Open follow-ups:
+    - Polygon/polyline edges aren't selectable: cutting one splits the element
+      in two, which needs the element creation/conversion work below
+    - Marquee (rubber-band) selection and select-all (Ctrl+A)
+    - A 'selection' event so host UIs can enable a Delete button without polling
+    - Cutting a segment is refused when the shape has any pin (it renumbers
+      nodes); revisit with the pin reassessment above
+    - Clicking the stroke now selects a segment; mode switching on an unfilled
+      path is a second click on the selected segment (or Escape, then click the
+      fill). Reconsider once a context-menu mode switch exists
+  - DONE: handling of symmetric/partially symmetric node handles. Type is
+    inferred from the geometry (corner / smooth / symmetric); symmetric pairs
+    made by Shift-drag or the node menu are flagged and written as S/T; smooth
+    pairs keep their angle; Alt-drag or Node type > Corner breaks the link.
+    Open follow-ups:
+    - A node between a line and a curve has no type: tangent alignment with an
+      adjacent L (and arcs) is part of the segment-conversion work below
+    - Quadratic controls hang off two nodes: links apply at both, but only
+      T-flagged chains cascade
+    - Dragging the start node of a closed path doesn't move the coincident end
+      node (pre-existing); it should, along with its handles
+    - Node-type shapes (rounded = smooth, round = symmetric) are a first guess
+  - DONE: H/V/L auto-conversion (a segment an edit touches is rewritten as
+    H, V or L, whichever fits; the rest keep their command) and the Segment
+    type menu (L/Q/C/A; line to cubic puts the handles at 1/3 and 2/3, to
+    quadratic at the middle; line to arc is tangent to the previous segment,
+    else a 1 radian arc). Open follow-ups:
+    - Commands are always written absolute, so the choice is only H/V/L, never
+      the relative h/v/l that might be a few characters shorter
+    - The closing line of a closed path (Z) can't be converted; do that by
+      turning it into an explicit L first
+    - A line made into a curve isn't made tangent to its neighbours (only the
+      arc case is), and the arc only looks at the segment before it
+    - Arc to cubic/quadratic can add nodes (an arc of more than a quarter turn
+      becomes several curves), so it needs nodes.insert
 - Implement conversion of objects to other types
   - Simple: rect, circle, ellipse, polyline, polygon => path
     - Just convert directly, using best options for straight lines and curves

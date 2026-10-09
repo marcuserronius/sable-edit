@@ -17,6 +17,12 @@
             snap([el]) ({x,y} grid step or null),
             policy (get/set: swap the whole policy at runtime),
             canUndo/canRedo, mode (get/set), modes (what the selected shape offers), cycleMode(),
+            selection (path / polygon / polyline edit mode: {kind:'node'|'segment', items:[indices]} or null), deleteSelection(), clearSelection()
+            (path edit mode also has node types: corner / smooth / symmetric; Shift-drag a handle = symmetric, Alt-drag = break the link; an editor can add
+            right-click menu items through ctx.menu(f))
+            edit mode: double-click / long-press a shape, or ed.edit(); Esc = back to scale, then deselect; ed.mode='edit' still works
+            path segments: right-click > Segment type (L / Q / C / A); lines the editor touches are written H / V / L, shortest first
+            (Delete / Backspace / Escape do the same while the page has focus, unless keys:false; the 'key' event lets an editor claim them),
             tool (get/set: 'pointer' or a tool id, stays until changed), useTool(id) (one use, then back to 'pointer'), tools (what is registered),
             openMenu(x,y), closeMenu(), addMenu(({x,y,target,editor}) => [items]) (returns a remover),
             on('select'|'change'|'history'|'mode'|'tool'|'create'|'remove'|'denied', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)

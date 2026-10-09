@@ -17,7 +17,7 @@ export function attach(svg,opts={}){
   let P=compilePolicy(opts.policy,{root}),lastDeny=''; // permissions: see src/policy.js. No policy = everything allowed, nothing checked
   if(P)P.validate(root); // data-sable-policy typos throw here, not later
   const perms=el=>P?P.resolve(el):OPEN, toolOk=id=>!P||P.toolOk(id);
-  let sel=null,layer=null,halo=null,body=null,subs=[],pref=MODES.includes(opts.mode)?opts.mode:'scale';
+  let sel=null,layer=null,halo=null,body=null,subs=[],menuOffs=[],start=MODES.includes(opts.mode)?opts.mode:'scale',pref=start==='edit'?'scale':start,editing=start==='edit'; // start: the mode a fresh selection opens in
   let tool='pointer',oneShot=false,gesture=null,swallow=false,menuCtl=null; // creation tools: see the 'Tools and context menu' section
 
   /* undo/redo: edits made in one pointer gesture (or one burst of typing) form one step */
@@ -82,10 +82,19 @@ export function attach(svg,opts={}){
   };
   const undo=()=>step(undoS,redoS,-1),redo=()=>step(redoS,undoS,1);
   const clearHistory=()=>{undoS.length=redoS.length=0;emit('history')};
-  const onDown=()=>{gid++;body&&body.cancel()}; // a new press also cancels a pending (deferred) mode switch
+  const onDown=()=>{gid++};
   const onKey=e=>{
     const t=document.activeElement;if(/INPUT|TEXTAREA|SELECT/.test(t?.tagName)||t?.isContentEditable)return;
-    if(e.key==='Escape'){if(!gesture&&tool!=='pointer')setTool('pointer');return}
+    if(!(e.ctrlKey||e.metaKey||e.altKey)&&/^(Escape|Delete|Backspace)$/.test(e.key)){ // the selected shape's editor gets first refusal (clear / delete its selection)
+      const d={key:e.key,event:e,handled:false};emit('key',d);if(d.handled){e.preventDefault();return}
+    }
+    if(e.key==='Escape'){ // one step back each time: the armed tool, then edit mode (back to scale), then the selection
+      if(gesture)return;
+      if(tool!=='pointer'){setTool('pointer');return}
+      if(sel&&cur()==='edit'&&xmodes(sel).length){editing=false;build();emit('mode',cur());return}
+      if(sel)select(null);
+      return;
+    }
     if(!(e.ctrlKey||e.metaKey))return;const k=e.key.toLowerCase();
     if(k==='z'){e.preventDefault();e.shiftKey?redo():undo()}else if(k==='y'){e.preventDefault();redo()}
   };
@@ -97,8 +106,11 @@ export function attach(svg,opts={}){
      (only the catch-all fallback matches) cycle scale <-> rotate. `pref` is the user's last choice and is
      kept across selections; `cur()` is what the selected shape can actually show (the policy can switch modes off). */
   const modesFor=el=>{const e=Widgets.find(el),p=perms(el);return MODES.filter(m=>modeOk(p,m)&&(m!=='edit'||(e&&!e.generic)))};
-  const cur=()=>{const ms=modesFor(sel);return ms.includes(pref)?pref:ms[0]};
-  const unsub=()=>{subs.forEach(([e,f])=>{const a=hs[e],i=a?a.indexOf(f):-1;if(i>=0)a.splice(i,1)});subs=[]};
+  /* scale and rotate/skew cycle on a click; edit mode is entered on purpose (double-click, a long press, api.edit()) and left with Escape.
+     A shape that is allowed nothing but edit mode just stays in it. */
+  const xmodes=el=>modesFor(el).filter(m=>m!=='edit'),canEdit=el=>modesFor(el).includes('edit');
+  const cur=()=>{const t=xmodes(sel);if(canEdit(sel)&&(editing||!t.length))return 'edit';return t.includes(pref)?pref:t[0]};
+  const unsub=()=>{menuOffs.forEach(f=>f());menuOffs=[];subs.forEach(([e,f])=>{const a=hs[e],i=a?a.indexOf(f):-1;if(i>=0)a.splice(i,1)});subs=[]};
   const teardown=()=>{layer?.destroy();halo?.destroy();layer=halo=null;unsub();ov.replaceChildren()};
   let ctx=null;
   function build(){
@@ -109,7 +121,7 @@ export function attach(svg,opts={}){
   }
   function select(el){
     if(el===sel||(el&&!perms(el).selectable))return;
-    body?.destroy();body=null;teardown();sel=el;ctx=null;
+    body?.destroy();body=null;teardown();sel=el;ctx=null;pref=start==='edit'?'scale':start;editing=start==='edit';
     if(tool==='pointer')svg.style.cursor=cursorWas;
     if(el){
       const toOverlay=e=>{const q=new DOMPoint(e.clientX,e.clientY).matrixTransform(ov.getScreenCTM().inverse());return [q.x,q.y]};
@@ -119,6 +131,7 @@ export function attach(svg,opts={}){
         toParent(e){const o=toOverlay(e),q=new DOMPoint(o[0],o[1]).matrixTransform(matrixFor(el).multiply(ownM(el).inverse()).inverse());return [q.x,q.y]},
         bbox(){try{const b=el.getBBox();return {x:b.x,y:b.y,w:b.width,h:b.height}}catch{return null}},
         set(a,v,src='widget',cap){return setAttr(el,a,v,src,cap)}, // false = refused by the policy
+        menu:f=>{menuOffs.push(api.addMenu(f))}, // the shape's editor adds items to the right-click menu while it is selected: f({x,y,target,editor}) => [items]
         batch, // batch(fn): the writes made inside fn are checked and applied together
         can:c=>perms(el).can(c),get pin(){return perms(el).pin}, // what the policy allows this shape / which nodes it pins
         /* a press on this shape that a widget's own overlay element caught: drag = move, click = next mode (see body.js) */
@@ -147,6 +160,25 @@ export function attach(svg,opts={}){
     svg.style.cursor=sel&&!ov.contains(e.target)&&pickAt(e)===sel&&perms(sel).can('transform.move')?'move':cursorWas;
   };
   svg.addEventListener('pointermove',onHover);
+  /* Edit mode is entered with a double-click, or a long press (finger or pen) where there is no double-click: on the shape or, once selected, on
+     its grab halo. Handles and the path editor's own elements are left alone (a double-click on a stroke there adds a node). */
+  const editTarget=e=>ov.contains(e.target)?(e.target.getAttribute?.('data-sable')==='halo'?sel:null):pickAt(e);
+  const editAt=t=>{if(t!==sel&&opts.pick===false)return false;if(t!==sel)select(t);return api.edit()};
+  const onDbl=e=>{if(e.button!==0||tool!=='pointer'||gesture)return;const t=editTarget(e);t&&editAt(t)};
+  svg.addEventListener('dblclick',onDbl);
+  const LONG=450;let lp=null,lpDone=-1e9;
+  const lpStop=()=>{if(!lp)return;clearTimeout(lp.timer);removeEventListener('pointermove',lp.move);removeEventListener('pointerup',lp.end);removeEventListener('pointercancel',lp.end);lp=null};
+  const onLong=e=>{
+    lpStop();if(e.pointerType==='mouse'||e.button!==0||tool!=='pointer'||gesture)return;
+    const t=editTarget(e);if(!t)return;
+    const id=e.pointerId,x0=e.clientX,y0=e.clientY;
+    const fire=()=>{lpStop();lpDone=performance.now();editAt(t)};
+    lp={timer:setTimeout(fire,LONG),fire,
+      move:ev=>{if(ev.pointerId===id&&Math.hypot(ev.clientX-x0,ev.clientY-y0)>8)lpStop()},end:ev=>{if(ev.pointerId===id)lpStop()}};
+    addEventListener('pointermove',lp.move);addEventListener('pointerup',lp.end);addEventListener('pointercancel',lp.end);
+  };
+  svg.addEventListener('pointerdown',onLong);
+
   /* ---- Tools and context menu ----
      Tool = pointer (the default: press to select, drag the shape to move it, handles edit) or a registered creation tool (src/tools/*).
      'Use Once' arms a tool for one successful gesture and then returns to pointer; 'Switch Tool' sets it until changed. */
@@ -198,6 +230,8 @@ export function attach(svg,opts={}){
     if(!items.length)return false;closeMenu();menuCtl=openMenuUI(items,x,y,()=>{menuCtl=null});return true;
   }
   const onCtx=e=>{
+    if(lp){e.preventDefault();lp.fire();return} // a long press that the browser also reports as a context menu: it means edit mode
+    if(performance.now()-lpDone<1000){e.preventDefault();return}
     if(opts.menu===false||gesture)return;const t=ov.contains(e.target)?null:e.target.closest?.(PRIM);
     if(openMenu(e.clientX,e.clientY,t&&root.contains(t)?t:null))e.preventDefault();
   };
@@ -206,8 +240,10 @@ export function attach(svg,opts={}){
     setMany(el,attrs,src,o){return batch(()=>{for(const a in attrs)setAttr(el,a,attrs[a],src,undefined,o&&o.force)},'many:'+(++bid))}, // several attributes: checked together, undone together
     undo,redo,clearHistory,get canUndo(){return undoS.length>0},get canRedo(){return redoS.length>0},get selected(){return sel},on,
     refresh(){emit('view')}, changed(el,attr,src='app'){emit('change',{el,attr,src})},
-    destroy(){closeMenu();setTool('pointer');select(null);svg.removeEventListener('pointerdown',toolDown,true);svg.removeEventListener('contextmenu',onCtx);svg.removeEventListener('click',onClick);svg.removeEventListener('pointerdown',onPress);svg.removeEventListener('pointermove',onHover);svg.removeEventListener('pointerdown',onDown,true);removeEventListener('keydown',onKey);if(!opts.overlay)ov.remove()},
-    get mode(){return sel?cur():pref},set mode(m){if(!MODES.includes(m)||m===api.mode)return;pref=m;if(sel&&cur()!==m)return;sel&&build();emit('mode',m)},
+    destroy(){closeMenu();setTool('pointer');select(null);svg.removeEventListener('pointerdown',toolDown,true);svg.removeEventListener('contextmenu',onCtx);svg.removeEventListener('click',onClick);svg.removeEventListener('dblclick',onDbl);svg.removeEventListener('pointerdown',onLong);lpStop();svg.removeEventListener('pointerdown',onPress);svg.removeEventListener('pointermove',onHover);svg.removeEventListener('pointerdown',onDown,true);removeEventListener('keydown',onKey);if(!opts.overlay)ov.remove()},
+    get mode(){return sel?cur():editing?'edit':pref},set mode(m){if(!MODES.includes(m)||m===api.mode)return;if(m==='edit')editing=true;else{pref=m;editing=false}if(sel&&cur()!==m)return;sel&&build();emit('mode',m)},
+    /* switch the shape (default: the selected one, which is selected first if it is another) to its own edit mode; false if it has none or the policy forbids it */
+    edit(el=sel){if(el&&el!==sel)select(el);if(!sel||!canEdit(sel))return false;if(cur()!=='edit'){editing=true;build();emit('mode','edit')}return true},
     get modes(){return sel?modesFor(sel):MODES},
     get tool(){return tool},set tool(id){setTool(id)},useTool(id){setTool(id,true)},get tools(){return Tools.list.filter(d=>toolOk(d.id)).map(({id,label})=>({id,label}))},
     openMenu,closeMenu,addMenu(f){menuB.push(f);return ()=>{const i=menuB.indexOf(f);i>=0&&menuB.splice(i,1)}},
@@ -220,6 +256,9 @@ export function attach(svg,opts={}){
     snap(el=sel){const s=el&&perms(el).snap;return s?{x:s[0],y:s[1]}:null}, // the grid step the policy imposes on the shape, in its own coordinates, or null
     get policy(){return P?P.spec:null},
     set policy(spec){const np=compilePolicy(spec,{root});if(np)np.validate(root);P=np;if(tool!=='pointer'&&!toolOk(tool))setTool('pointer');if(!sel)return;if(!perms(sel).selectable)select(null);else build()},
-    cycleMode(){if(!sel)return;const ms=modesFor(sel);if(ms.length<2)return;pref=ms[(ms.indexOf(cur())+1)%ms.length];build();emit('mode',pref)}};
+    /* the edit-mode layer's own selection (path / polygon / polyline nodes, path segments): for host UIs and for hosts that attach with keys:false */
+    deleteSelection(){return !!(layer&&layer.deleteSelection&&layer.deleteSelection())},clearSelection(){layer&&layer.clearSelection&&layer.clearSelection()},
+    get selection(){return (layer&&layer.selection)||null}, // {kind:'node'|'segment', items:[indices]} or null
+    cycleMode(){if(!sel||cur()==='edit')return;const t=xmodes(sel);if(t.length<2)return;pref=t[(t.indexOf(cur())+1)%t.length];build();emit('mode',pref)}};
   return api;
 }

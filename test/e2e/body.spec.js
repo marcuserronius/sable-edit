@@ -30,7 +30,7 @@ const drag = async (page, from, dx, dy) => {
 const rect = (id, x, y, w, h, extra = {}) => ({ tag: 'rect', id, attrs: { x, y, width: w, height: h, fill: '#d6eaf8', stroke: '#2874a6', 'stroke-width': 2, ...extra } });
 const mode = page => page.locator('#mode');
 
-test('the first press selects without switching mode; each later click switches it', async ({ page }) => {
+test('the first press selects without switching mode; each later click toggles scale and rotate; a double-click enters edit mode', async ({ page }) => {
   await setup(page, [rect('r', 30, 30, 120, 80)]);
   const p = await pt(page, 'r');
   await page.mouse.click(p.x, p.y);
@@ -39,7 +39,16 @@ test('the first press selects without switching mode; each later click switches 
   await page.mouse.click(p.x, p.y);
   await expect(mode(page)).toHaveText('mode: rotate');
   await page.mouse.click(p.x, p.y);
+  await expect(mode(page)).toHaveText('mode: scale');     // edit is not part of the cycle
+  await page.mouse.dblclick(p.x, p.y);
   await expect(mode(page)).toHaveText('mode: edit');
+  await page.mouse.click(p.x, p.y);
+  await expect(mode(page)).toHaveText('mode: edit');      // a click does not leave it either: Escape does
+  await page.keyboard.press('Escape');
+  await expect(mode(page)).toHaveText('mode: scale');
+  expect(await page.evaluate(() => ed.selected && ed.selected.id)).toBe('r');
+  await page.keyboard.press('Escape');
+  expect(await page.evaluate(() => ed.selected)).toBeNull();
 });
 
 test('pressing and dragging an unselected shape selects and moves it in one gesture; undo is one step', async ({ page }) => {
@@ -122,7 +131,7 @@ test('the cursor says the selected body moves, and goes back off it', async ({ p
   await expect.poll(cur).not.toBe('move');
 });
 
-test('path edit mode: dragging the stroke moves the path; a click switches mode after the double-click window; a double-click adds a node', async ({ page }) => {
+test('path edit mode: dragging the stroke moves the path; a click selects a segment at once and a later click on it clears it; a double-click adds a node', async ({ page }) => {
   await setup(page, [{ tag: 'path', id: 'pa', attrs: { d: 'M30 60 L170 60', fill: 'none', stroke: '#c0392b', 'stroke-width': 3 } }]);
   const p = await pt(page, 'pa'); await page.mouse.click(p.x, p.y);
   await expect(page.locator('#readout')).toHaveText('<path> selected');
@@ -140,8 +149,12 @@ test('path edit mode: dragging the stroke moves the path; a click switches mode 
   await page.waitForTimeout(500);
   expect(nodes(await page.locator('#pa').getAttribute('d'))).toBeGreaterThan(n0);
   await expect(mode(page)).toHaveText('mode: edit');
-  // a single click on the stroke switches mode, after the wait
+  // a single click on the stroke selects the segment under it straight away (nothing waits for a possible double-click)
   await page.mouse.click(p.x + 40, p.y);   // elsewhere on the stroke: the new node now sits under the first spot
-  await expect(mode(page)).toHaveText('mode: edit');   // still waiting out the double-click window
-  await expect(mode(page)).toHaveText('mode: scale');
+  expect(await page.evaluate(() => ed.selection?.kind)).toBe('segment');
+  // clicking that one selected segment again clears it, and the mode stays edit
+  await page.waitForTimeout(600);
+  await page.mouse.click(p.x + 40, p.y);
+  expect(await page.evaluate(() => ed.selection)).toBeNull();
+  await expect(mode(page)).toHaveText('mode: edit');
 });

@@ -17,6 +17,12 @@
             snap([el]) ({x,y} grid step or null),
             policy (get/set: swap the whole policy at runtime),
             canUndo/canRedo, mode (get/set), modes (what the selected shape offers), cycleMode(),
+            selection (path / polygon / polyline edit mode: {kind:'node'|'segment', items:[indices]} or null), deleteSelection(), clearSelection()
+            (path edit mode also has node types: corner / smooth / symmetric; Shift-drag a handle = symmetric, Alt-drag = break the link; an editor can add
+            right-click menu items through ctx.menu(f))
+            edit mode: double-click / long-press a shape, or ed.edit(); Esc = back to scale, then deselect; ed.mode='edit' still works
+            path segments: right-click > Segment type (L / Q / C / A); lines the editor touches are written H / V / L, shortest first
+            (Delete / Backspace / Escape do the same while the page has focus, unless keys:false; the 'key' event lets an editor claim them),
             tool (get/set: 'pointer' or a tool id, stays until changed), useTool(id) (one use, then back to 'pointer'), tools (what is registered),
             openMenu(x,y), closeMenu(), addMenu(({x,y,target,editor}) => [items]) (returns a remover),
             on('select'|'change'|'history'|'mode'|'tool'|'create'|'remove'|'denied', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
@@ -188,11 +194,11 @@ var SableEdit = (() => {
           break;
         case "H":
           x = X(a[0]);
-          out.push({ t: "L", pts: [[x, y]] });
+          out.push({ t: "L", pts: [[x, y]], c: "H" });
           break;
         case "V":
           y = Y(a[0]);
-          out.push({ t: "L", pts: [[x, y]] });
+          out.push({ t: "L", pts: [[x, y]], c: "V" });
           break;
         case "C": {
           const p = [[X(a[0]), Y(a[1])], [X(a[2]), Y(a[3])], [X(a[4]), Y(a[5])]];
@@ -203,7 +209,7 @@ var SableEdit = (() => {
         }
         case "S": {
           const p = [lc ? [2 * x - lc[0], 2 * y - lc[1]] : [x, y], [X(a[0]), Y(a[1])], [X(a[2]), Y(a[3])]];
-          out.push({ t: "C", pts: p });
+          out.push({ t: "C", pts: p, sm: 1 });
           nc = p[1];
           [x, y] = p[2];
           break;
@@ -217,7 +223,7 @@ var SableEdit = (() => {
         }
         case "T": {
           const c = lq ? [2 * x - lq[0], 2 * y - lq[1]] : [x, y], p = [c, [X(a[0]), Y(a[1])]];
-          out.push({ t: "Q", pts: p });
+          out.push({ t: "Q", pts: p, sm: 1 });
           nq = c;
           [x, y] = p[1];
           break;
@@ -233,7 +239,22 @@ var SableEdit = (() => {
     }
     return out;
   }
-  var serPath = (segs) => segs.map((s) => s.t === "Z" ? "Z" : s.t + (s.arc ? s.arc.join(" ") + " " : "") + s.pts.flat().map((v) => +v.toFixed(3)).join(" ")).join(" ");
+  function serPath(segs) {
+    const info = segInfo(segs), f2 = (n) => +n.toFixed(3), v = (a) => a.map(f2).join(" ");
+    return segs.map((s, i) => {
+      if (s.t === "Z") return "Z";
+      if (s.t === "L" && s.c && info[i].from) {
+        const [x0, y0] = info[i].from, [x, y] = s.pts[0];
+        if (s.c === "H" && f2(y) === f2(y0)) return "H" + f2(x);
+        if (s.c === "V" && f2(x) === f2(x0)) return "V" + f2(y);
+      }
+      if (s.sm && (s.t === "C" || s.t === "Q")) {
+        const e = smoothCtl(segs, i, info);
+        if (e && near(e, s.pts[0])) return (s.t === "C" ? "S" : "T") + v(s.pts.slice(1).flat());
+      }
+      return s.t + (s.arc ? s.arc.join(" ") + " " : "") + v(s.pts.flat());
+    }).join(" ");
+  }
   function arcGeom(p, e, rx, ry, deg, fa, fs) {
     rx = Math.abs(rx);
     ry = Math.abs(ry);
@@ -327,6 +348,358 @@ var SableEdit = (() => {
     }
     phi = ((phi + 180) % 360 + 360) % 360 - 180;
     return [r3(rx), r3(ry), r3(phi), fa, fs];
+  }
+  var same = (a, b) => Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9;
+  var clone = (s) => ({ ...s, pts: s.pts.map((p) => [...p]), ...s.arc ? { arc: [...s.arc] } : {} });
+  function segInfo(segs) {
+    const out = [];
+    let cur = null, sx = null;
+    for (const s of segs) {
+      if (s.t === "M") {
+        cur = sx = s.pts[0];
+        out.push({ from: cur, to: cur });
+        continue;
+      }
+      const to = s.t === "Z" ? sx : s.pts.at(-1);
+      out.push({ from: cur, to });
+      cur = to;
+    }
+    return out;
+  }
+  function segD(segs, i) {
+    const s = segs[i], f2 = segInfo(segs)[i];
+    if (!s || s.t === "M" || !f2.from) return "";
+    const v = (a) => a.map((n) => +n.toFixed(3)).join(" ");
+    return "M" + v(f2.from) + (s.t === "Z" ? " L" + v(f2.to) : " " + s.t + (s.arc ? v(s.arc) + " " : "") + v(s.pts.flat()));
+  }
+  function nearestSeg(segs, p, opts = {}) {
+    const info = segInfo(segs);
+    let best = null;
+    segs.forEach((s, i) => {
+      if (s.t === "M") return;
+      const { from, to } = info[i];
+      if (!from || (s.t === "Z" || s.t === "L") && same(from, to)) return;
+      let at, cp = null;
+      if (s.t === "A") {
+        if (opts.arcs === false) return;
+        const g = arcGeom(from, to, ...s.arc);
+        at = g ? (t) => g.pt(g.th1 + g.dth * t) : (t) => lerp(from, to, t);
+      } else {
+        cp = s.t === "Z" || s.t === "L" ? [from, to] : [from, ...s.pts];
+        at = (t) => dc(cp, t);
+      }
+      for (let k = 1; k < 32; k++) {
+        const q = at(k / 32), d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        if (!best || d < best.d) best = { d, i, t: k / 32, cp };
+      }
+    });
+    return best;
+  }
+  var tidy = (a) => {
+    const r = [];
+    let skipZ = false;
+    a.forEach((s, k) => {
+      const n = a[k + 1];
+      if (s.t === "M" && (!n || n.t === "M" || n.t === "Z")) {
+        skipZ = true;
+        return;
+      }
+      if (s.t === "Z" && (skipZ || !r.length || r.at(-1).t === "Z")) return;
+      skipZ = false;
+      r.push(s);
+    });
+    return r;
+  };
+  function deleteNodes(segs, idxs, pinned = /* @__PURE__ */ new Set()) {
+    const out = segs.map(clone), del = [...idxs].filter((i) => out[i] && out[i].t !== "Z" && !pinned.has(i)).sort((a, b) => b - a);
+    if (!del.length || out.filter((s) => s.t !== "Z").length - del.length < 2) return null;
+    for (const i of del) {
+      if (out[i].t === "M") {
+        const n = out[i + 1];
+        if (n && n.t !== "Z" && n.t !== "M") {
+          n.t = "M";
+          n.pts = [n.pts.at(-1)];
+          delete n.arc;
+        }
+      }
+      out.splice(i, 1);
+      if (out[i] && out[i].t === "L") out[i].dirty = 1;
+    }
+    return tidy(out);
+  }
+  function deleteSegments(segs, idxs) {
+    const want = new Set(idxs), info = segInfo(segs), out = [];
+    let did = false, i = 0;
+    while (i < segs.length) {
+      if (segs[i].t !== "M") {
+        out.push(clone(segs[i]));
+        i++;
+        continue;
+      }
+      let j = i + 1;
+      while (j < segs.length && segs[j].t !== "M") j++;
+      const z = segs.findIndex((s, k) => k > i && k < j && s.t === "Z"), keep = () => {
+        for (let k = i; k < j; k++) out.push(clone(segs[k]));
+      };
+      if (z >= 0 && z !== j - 1) {
+        keep();
+        i = j;
+        continue;
+      }
+      const E = [];
+      for (let k = i + 1; k < j; k++) if (segs[k].t !== "Z") E.push({ idx: k, seg: clone(segs[k]), from: info[k].from });
+      if (z >= 0 && !same(info[z].from, info[z].to)) E.push({ idx: z, seg: { t: "L", pts: [[...info[z].to]], dirty: 1 }, from: info[z].from });
+      const first = E.findIndex((e) => want.has(e.idx));
+      if (first < 0) {
+        keep();
+        i = j;
+        continue;
+      }
+      did = true;
+      const ring = z >= 0 ? [...E.slice(first + 1), ...E.slice(0, first + 1)] : E;
+      let run = null;
+      for (const e of ring) {
+        if (want.has(e.idx)) {
+          run = null;
+          continue;
+        }
+        if (!run) {
+          out.push({ t: "M", pts: [[...e.from]] });
+          run = 1;
+        }
+        out.push(e.seg);
+      }
+      i = j;
+    }
+    const r = tidy(out);
+    return did && r.length ? r : null;
+  }
+  function deletePoints(pts, idxs, min, pinned = /* @__PURE__ */ new Set()) {
+    const rm = new Set([...idxs].filter((i) => i >= 0 && i < pts.length && !pinned.has(i)));
+    return rm.size && pts.length - rm.size >= min ? pts.filter((_, i) => !rm.has(i)) : null;
+  }
+  var near = (a, b) => Math.abs(a[0] - b[0]) <= 0.01 && Math.abs(a[1] - b[1]) <= 0.01;
+  var refl = (h, n) => [2 * n[0] - h[0], 2 * n[1] - h[1]];
+  var vec = (a, b) => [a[0] - b[0], a[1] - b[1]];
+  var vlen = (v) => Math.hypot(v[0], v[1]);
+  function smoothCtl(segs, i, info) {
+    const s = segs[i], p = segs[i - 1];
+    if (s.t === "C") return p && p.t === "C" ? refl(p.pts[1], info[i - 1].to) : info[i].from;
+    if (s.t === "Q") return p && p.t === "Q" ? refl(p.pts[0], info[i - 1].to) : info[i].from;
+    return null;
+  }
+  function healSmooth(segs) {
+    const info = segInfo(segs);
+    segs.forEach((s, i) => {
+      if (!s.sm) return;
+      const e = (s.t === "C" || s.t === "Q") && smoothCtl(segs, i, info);
+      if (!e || !near(e, s.pts[0])) delete s.sm;
+    });
+    return segs;
+  }
+  function fixSmooth(segs) {
+    const info = segInfo(segs);
+    segs.forEach((s, i) => {
+      if (!s.sm) return;
+      const e = smoothCtl(segs, i, info);
+      if (e && (s.t === "C" || s.t === "Q")) s.pts[0] = e;
+      else delete s.sm;
+    });
+    return segs;
+  }
+  function nodeHandles(segs, j, info = segInfo(segs)) {
+    const s = segs[j];
+    if (!s || s.t === "Z") return null;
+    let m = j;
+    while (m > 0 && segs[m].t !== "M") m--;
+    let z = -1, e = -1;
+    for (let k = m + 1; k < segs.length && segs[k].t !== "M"; k++) {
+      if (segs[k].t === "Z") {
+        z = k;
+        break;
+      }
+      e = k;
+    }
+    const wrap = z >= 0 && e > m && near(info[e].to, info[m].to);
+    const endH = (i) => {
+      const q = segs[i];
+      return q && q.t === "C" ? { i, k: 1 } : q && q.t === "Q" ? { i, k: 0 } : null;
+    };
+    const startH = (i) => {
+      const q = segs[i];
+      return q && (q.t === "C" || q.t === "Q") ? { i, k: 0 } : null;
+    };
+    const a = s.t === "M" ? wrap ? endH(e) : null : endH(j);
+    const b = wrap && j === e ? startH(m + 1) : startH(j + 1);
+    return { n: info[j].to, a, b, flag: b && b.i === j + 1 ? b.i : -1 };
+  }
+  function nodeType(segs, j, info = segInfo(segs)) {
+    const h = nodeHandles(segs, j, info);
+    if (!h || !h.a || !h.b) return null;
+    if (h.flag >= 0 && segs[h.flag].sm) return "symmetric";
+    const A2 = vec(segs[h.a.i].pts[h.a.k], h.n), B = vec(segs[h.b.i].pts[h.b.k], h.n), la = vlen(A2), lb = vlen(B);
+    if (la < 5e-3 || lb < 5e-3) return "corner";
+    if (Math.abs(A2[0] * B[1] - A2[1] * B[0]) / (la * lb) > 5e-3 || A2[0] * B[0] + A2[1] * B[1] >= 0) return "corner";
+    return Math.abs(la - lb) <= Math.max(5e-3, 1e-3 * Math.max(la, lb)) ? "symmetric" : "smooth";
+  }
+  function handleLinks(segs, i, k) {
+    const info = segInfo(segs), s = segs[i];
+    if (!s || s.t !== "C" && s.t !== "Q") return [];
+    let m = i - 1;
+    while (m >= 0 && segs[m].t === "Z") m--;
+    const nodes = s.t === "Q" ? [m, i] : k === 0 ? [m] : [i], out = [];
+    for (const j of nodes) {
+      const h = j >= 0 && nodeHandles(segs, j, info);
+      if (!h || !h.a || !h.b) continue;
+      const mine = h.a.i === i && h.a.k === k ? "a" : h.b.i === i && h.b.k === k ? "b" : null;
+      if (!mine) continue;
+      const part = mine === "a" ? h.b : h.a;
+      out.push({ node: h.n, partner: part, type: nodeType(segs, j, info), len: vlen(vec(segs[part.i].pts[part.k], h.n)), flag: h.flag });
+    }
+    return out;
+  }
+  function dragHandle(segs, i, k, p, links, force) {
+    segs[i].pts[k] = p;
+    for (const L of links) {
+      const mode = force === "free" ? "corner" : force === "sym" ? "symmetric" : L.type, q = segs[L.partner.i];
+      if (mode === "symmetric") q.pts[L.partner.k] = refl(p, L.node);
+      else if (mode === "smooth") {
+        const v = vec(L.node, p), d = vlen(v);
+        if (d > 1e-6) q.pts[L.partner.k] = [L.node[0] + v[0] / d * L.len, L.node[1] + v[1] / d * L.len];
+      }
+      if (L.flag >= 0) {
+        if (force === "free") delete segs[L.flag].sm;
+        else if (force === "sym" && segs[L.flag].t === segs[L.flag - 1]?.t) segs[L.flag].sm = 1;
+      }
+    }
+  }
+  function setNodeType(segs, j, type) {
+    const h = nodeHandles(segs, j);
+    if (!h || !h.a || !h.b) return null;
+    const out = segs.map(clone), A2 = out[h.a.i].pts[h.a.k], B = out[h.b.i], la = vlen(vec(A2, h.n)), lb = vlen(vec(B.pts[h.b.k], h.n));
+    if (type === "corner") {
+      if (h.flag >= 0) delete out[h.flag].sm;
+    } else if (type === "smooth") {
+      if (la < 5e-3) return null;
+      const L = lb < 5e-3 ? la : lb;
+      B.pts[h.b.k] = [h.n[0] - (A2[0] - h.n[0]) / la * L, h.n[1] - (A2[1] - h.n[1]) / la * L];
+    } else if (type === "symmetric") {
+      B.pts[h.b.k] = refl(A2, h.n);
+      if (h.flag >= 0 && out[h.flag].t === out[h.flag - 1]?.t) out[h.flag].sm = 1;
+    } else return null;
+    return healSmooth(out);
+  }
+  function retype(segs) {
+    const info = segInfo(segs), f2 = (n) => +n.toFixed(3);
+    segs.forEach((s, i) => {
+      if (!s.dirty) return;
+      delete s.dirty;
+      if (s.t !== "L") {
+        delete s.c;
+        return;
+      }
+      const [x0, y0] = info[i].from || [NaN, NaN], [x, y] = s.pts[0];
+      if (f2(y) === f2(y0) && f2(x) !== f2(x0)) s.c = "H";
+      else if (f2(x) === f2(x0) && f2(y) !== f2(y0)) s.c = "V";
+      else delete s.c;
+    });
+    return segs;
+  }
+  var lerp2 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  var unit = (v) => {
+    const d = Math.hypot(v[0], v[1]);
+    return d > 1e-9 ? [v[0] / d, v[1] / d] : null;
+  };
+  function endTangent(segs, i, info) {
+    const q = segs[i];
+    if (!q || q.t === "M" || q.t === "Z") return null;
+    const { from, to } = info[i];
+    if (q.t === "C") return unit(vec(q.pts[2], q.pts[1])) || unit(vec(q.pts[2], q.pts[0])) || unit(vec(to, from));
+    if (q.t === "Q") return unit(vec(q.pts[1], q.pts[0])) || unit(vec(to, from));
+    if (q.t === "A") {
+      const g = arcGeom(from, to, ...q.arc);
+      if (!g) return unit(vec(to, from));
+      const t = g.th1 + g.dth, sg = Math.sign(g.dth) || 1, sn = Math.sin(t), cs = Math.cos(t);
+      return unit([sg * (-g.rx * sn * g.c - g.ry * cs * g.s), sg * (-g.rx * sn * g.s + g.ry * cs * g.c)]);
+    }
+    return unit(vec(to, from));
+  }
+  function arcThrough(from, mid, to) {
+    const [ax, ay] = from, [bx, by] = mid, [cx, cy] = to, d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+    const sc = Math.hypot(cx - ax, cy - ay);
+    if (Math.abs(d) < 1e-6 * sc * sc) return null;
+    const a2 = ax * ax + ay * ay, b2 = bx * bx + by * by, c2 = cx * cx + cy * cy, ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d, uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d, R2 = Math.hypot(ax - ux, ay - uy);
+    const m = vec(mid, from), n = vec(to, mid);
+    return [R2, R2, 0, vec(from, mid)[0] * vec(to, mid)[0] + vec(from, mid)[1] * vec(to, mid)[1] > 0 ? 1 : 0, m[0] * n[1] - m[1] * n[0] > 0 ? 1 : 0];
+  }
+  function arcTangent(from, to, d) {
+    const ch = vec(to, from), cr = d[0] * ch[1] - d[1] * ch[0], L2 = ch[0] * ch[0] + ch[1] * ch[1];
+    if (Math.abs(cr) < 1e-6 * Math.sqrt(L2)) return null;
+    const R2 = L2 / (2 * Math.abs(cr));
+    return [R2, R2, 0, d[0] * ch[0] + d[1] * ch[1] < 0 ? 1 : 0, cr > 0 ? 1 : 0];
+  }
+  function arcPieces(g, to, quad) {
+    const n = Math.max(1, Math.ceil(Math.abs(g.dth) / (quad ? Math.PI / 4 : Math.PI / 2) - 1e-9)), st = g.dth / n, out = [];
+    const d = (t) => [-g.rx * Math.sin(t) * g.c - g.ry * Math.cos(t) * g.s, -g.rx * Math.sin(t) * g.s + g.ry * Math.cos(t) * g.c];
+    for (let j = 0; j < n; j++) {
+      const t1 = g.th1 + j * st, t2 = t1 + st, P2 = j === n - 1 ? to : g.pt(t2);
+      if (quad) {
+        const m = g.pt(t1 + st / 2), k = 1 / Math.cos(st / 2);
+        out.push({ t: "Q", pts: [[g.cx + (m[0] - g.cx) * k, g.cy + (m[1] - g.cy) * k], P2] });
+      } else {
+        const k = 4 / 3 * Math.tan(st / 4), P1 = g.pt(t1), D1 = d(t1), D2 = d(t2);
+        out.push({ t: "C", pts: [[P1[0] + k * D1[0], P1[1] + k * D1[1]], [P2[0] - k * D2[0], P2[1] - k * D2[1]], P2] });
+      }
+    }
+    return out;
+  }
+  function convertSegment(segs, i, type, info = segInfo(segs)) {
+    const s = segs[i];
+    if (!s || s.t === "M" || s.t === "Z" || s.t === type) return null;
+    const { from, to } = info[i], g = s.t === "A" ? arcGeom(from, to, ...s.arc) : null, cp = s.t === "C" || s.t === "Q" ? [from, ...s.pts] : null;
+    if (type === "L") return [{ t: "L", pts: [[...to]] }];
+    if (type === "Q") {
+      if (s.t === "L" || s.t === "A" && !g) return [{ t: "Q", pts: [lerp2(from, to, 0.5), [...to]] }];
+      if (s.t === "C") {
+        const [a, b] = s.pts;
+        return [{ t: "Q", pts: [[(3 * (a[0] + b[0]) - from[0] - to[0]) / 4, (3 * (a[1] + b[1]) - from[1] - to[1]) / 4], [...to]] }];
+      }
+      return arcPieces(g, to, true);
+    }
+    if (type === "C") {
+      if (s.t === "L" || s.t === "A" && !g) return [{ t: "C", pts: [lerp2(from, to, 1 / 3), lerp2(from, to, 2 / 3), [...to]] }];
+      if (s.t === "Q") {
+        const c = s.pts[0];
+        return [{ t: "C", pts: [lerp2(from, c, 2 / 3), lerp2(to, c, 2 / 3), [...to]] }];
+      }
+      return arcPieces(g, to, false);
+    }
+    if (type === "A") {
+      let a = cp && arcThrough(from, dc(cp, 0.5), to);
+      if (!a) {
+        const d = i > 0 && endTangent(segs, i - 1, info);
+        a = d && arcTangent(from, to, d);
+      }
+      if (!a) {
+        const R2 = Math.hypot(to[0] - from[0], to[1] - from[1]) / (2 * Math.sin(0.5));
+        a = [R2, R2, 0, 0, 1];
+      }
+      return [{ t: "A", arc: a.map((n) => +n.toFixed(3)), pts: [[...to]] }];
+    }
+    return null;
+  }
+  function convertSegments(segs, idxs, type) {
+    const info = segInfo(segs), want = new Set(idxs), out = [], sel = [];
+    let did = false;
+    segs.forEach((s, i) => {
+      const r = want.has(i) ? convertSegment(segs, i, type, info) : null;
+      if (want.has(i) && s.t !== "M") sel.push(...r ? r.map((_, k) => out.length + k) : [out.length]);
+      if (r) {
+        did = true;
+        r.forEach((q) => out.push({ ...q, dirty: 1 }));
+      } else out.push(clone(s));
+    });
+    return did ? { segs: healSmooth(out), sel } : null;
   }
 
   // src/util.js
@@ -987,15 +1360,71 @@ var SableEdit = (() => {
     return p.can("attrs.edit") && (attr === "style" ? !p.denied("style") : p.propOk(attr));
   }
 
+  // src/selection.js
+  function selection() {
+    let kind = null;
+    const set = /* @__PURE__ */ new Set();
+    const api = {
+      get kind() {
+        return kind;
+      },
+      get size() {
+        return set.size;
+      },
+      get items() {
+        return [...set].sort((a, b) => a - b);
+      },
+      has: (k, i) => kind === k && set.has(i),
+      only: (k, i) => kind === k && set.size === 1 && set.has(i),
+      pick(k, i, add = false) {
+        if (kind !== k || !add) {
+          kind = k;
+          set.clear();
+          set.add(i);
+          return;
+        }
+        set.has(i) ? set.delete(i) : set.add(i);
+        if (!set.size) kind = null;
+      },
+      /* a press: picks now when the item isn't selected yet, and returns what a release without a drag should do. Pressing an
+         item that is already selected leaves the selection alone, so the whole selection can be dragged; a click on it
+         collapses to it (or, with shift, drops it). */
+      press(k, i, add) {
+        if (!api.has(k, i)) {
+          api.pick(k, i, add);
+          return () => {
+          };
+        }
+        return () => api.pick(k, i, add);
+      },
+      clear() {
+        kind = null;
+        set.clear();
+      },
+      keep(k, ok) {
+        if (kind !== k) return;
+        for (const i of [...set]) if (!ok(i)) set.delete(i);
+        if (!set.size) kind = null;
+      }
+    };
+    return api;
+  }
+
   // src/widgets/path.js
   Widgets.register((el) => el.tagName === "path", (ctx) => {
     const el = ctx.el, g = mk("g");
     ctx.overlay.append(g);
-    let segs = parsePath(el.getAttribute("d") || ""), items = [], lines = [], hit, gh, dead = false, mv0 = false, mv1 = false, act = -1, arcs = [], pinned = /* @__PURE__ */ new Set();
+    let segs = parsePath(el.getAttribute("d") || ""), items = [], lines = [], hit, gh, sg, dead = false, mv0 = false, mv1 = false, arcs = [], pinned = /* @__PURE__ */ new Set();
+    const S = selection();
     const f2 = (v) => +v.toFixed(3), A2 = (e, o) => {
       for (const k in o) e.setAttribute(k, o[k]);
     };
-    const ser = () => segs.map((s) => s.t === "Z" ? "Z" : s.t + (s.arc ? s.arc.join(" ") + " " : "") + s.pts.flat().map(f2).join(" ")).join(" ");
+    const ser = () => serPath(segs);
+    let uid = 0, segAt = 0;
+    const T0 = (p) => {
+      const q = new DOMPoint(p[0], p[1]).matrixTransform(ctx.matrix());
+      return [q.x, q.y];
+    };
     const sync = () => {
       const n = parsePath(el.getAttribute("d") || "");
       if (n.length !== segs.length || n.some((q, i) => q.t !== segs[i].t)) {
@@ -1006,10 +1435,14 @@ var SableEdit = (() => {
       n.forEach((q, i) => {
         segs[i].pts = q.pts;
         if (q.arc) segs[i].arc = q.arc;
+        if (q.sm) segs[i].sm = 1;
+        else delete segs[i].sm;
       });
     };
-    const write = () => {
-      const v = ser(), r = ctx.set("d", v);
+    const write = (own) => {
+      fixSmooth(segs);
+      retype(segs);
+      const v = ser(), r = own ? ctx.batch(() => ctx.set("d", v), own) : ctx.set("d", v);
       if (r === false) {
         segs = parsePath(el.getAttribute("d") || "");
         build();
@@ -1022,12 +1455,17 @@ var SableEdit = (() => {
     const startOf = (i) => {
       for (let j = i; j >= 0; j--) if (segs[j].t === "M") return segs[j].pts[0];
     };
-    function bind(h, onStart, onMove) {
+    const pnode = (i) => {
+      for (let j = i - 1; j >= 0; j--) if (segs[j].t !== "Z") return j;
+      return -1;
+    };
+    const on = (i, w) => S.has("seg", i) || w !== 1 && S.has("node", pnode(i)) || w !== 0 && S.has("node", i);
+    function bind(h, onStart, onMove, onClick) {
       h.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         h.setPointerCapture(e.pointerId);
         const p0 = ctx.toLocal(e);
-        onStart(p0);
+        onStart(p0, e);
         mv0 = mv1;
         mv1 = false;
         const mv = (ev) => {
@@ -1037,83 +1475,88 @@ var SableEdit = (() => {
           layout();
         };
         h.addEventListener("pointermove", mv);
-        h.addEventListener("pointerup", () => h.removeEventListener("pointermove", mv), { once: true });
+        h.addEventListener("pointerup", () => {
+          h.removeEventListener("pointermove", mv);
+          if (!mv1 && onClick) onClick();
+        }, { once: true });
       });
     }
-    function ctl(s, k, i) {
+    function ctl(s, k, i, w) {
       const h = mk("circle", { style: "pointer-events:all;cursor:move", fill: "var(--acc,#2f6fed)" });
-      items.push({ el: h, get: () => s.pts[k], r: 3.5 });
+      items.push({ el: h, get: () => s.pts[k], r: 3.5, vis: () => on(i, w) });
       gh.append(h);
+      let links = [];
       bind(h, () => {
+        links = handleLinks(segs, i, k);
       }, (p, p0, ev) => {
-        s.pts[k] = p;
-        if (ev.shiftKey && s.t === "C") {
-          const [o, oi, nd] = k ? [segs[i + 1], 0, s.pts[2]] : [segs[i - 1], 1, prevPt(i)];
-          if (o?.t === "C") o.pts[oi] = [2 * nd[0] - p[0], 2 * nd[1] - p[1]];
-        }
+        dragHandle(segs, i, k, p, links, ev.altKey ? "free" : ev.shiftKey ? "sym" : null);
       });
     }
     function node(s, i) {
-      const h = mk("rect", { style: "pointer-events:all;cursor:move", fill: "var(--panel,#fff)", stroke: "var(--acc,#2f6fed)" });
-      items.push({ el: h, get: () => s.pts.at(-1), r: 5, n: 1 });
+      const h = mk("rect", { style: "pointer-events:all;cursor:move", fill: "var(--panel,#fff)", stroke: "var(--acc,#2f6fed)" }), pin = pinned.has(i);
+      items.push({ el: h, get: () => s.pts.at(-1), r: 5, n: 1, node: i, pin });
       gh.append(h);
-      let refs = [];
-      if (pinned.has(i)) {
+      if (pin) {
         h.style.cursor = "not-allowed";
         h.setAttribute("fill", "#ddd");
         h.setAttribute("stroke", "#888");
         h.addEventListener("pointerdown", (e) => {
           e.stopPropagation();
-          if (s.t === "A") {
-            act = i;
-            layout();
-          }
+          S.pick("node", i, e.shiftKey);
+          layout();
         });
         return;
       }
-      bind(h, () => {
-        if (s.t === "A") {
-          act = i;
-          layout();
+      let refs = [], rel = () => {
+      };
+      bind(h, (p0, e) => {
+        rel = S.press("node", i, e.shiftKey);
+        layout();
+        refs = [];
+        for (const j of S.items) {
+          const q = segs[j];
+          if (!q || q.t === "Z" || pinned.has(j)) continue;
+          const nx = segs[j + 1];
+          refs.push([q, q.pts.length - 1]);
+          if (q.t === "C") refs.push([q, 1]);
+          if (nx?.t === "C") refs.push([nx, 0]);
+          if (q.t === "L") q.dirty = 1;
+          if (nx?.t === "L") nx.dirty = 1;
         }
-        const nx = segs[i + 1];
-        refs = [[s, s.pts.length - 1]];
-        if (s.t === "C") refs.push([s, 1]);
-        if (nx?.t === "C") refs.push([nx, 0]);
         refs = refs.map(([q, k]) => [q, k, [...q.pts[k]]]);
       }, (p, p0) => {
         const dx = p[0] - p0[0], dy = p[1] - p0[1];
         refs.forEach(([q, k, o]) => q.pts[k] = [o[0] + dx, o[1] + dy]);
+      }, () => {
+        rel();
+        layout();
       });
       h.addEventListener("dblclick", (e) => {
         e.stopPropagation();
-        if (!ctx.can("nodes.delete") || mv0 || mv1 || segs.filter((q) => q.t !== "Z").length < 3) return;
-        if (s.t === "M") {
-          const n = segs[i + 1];
-          if (!n || n.t === "Z") return;
-          n.t = "M";
-          n.pts = [n.pts.at(-1)];
-          delete n.arc;
-        }
-        segs.splice(i, 1);
-        write();
-        build();
+        if (mv0 || mv1) return;
+        S.pick("node", i);
+        del();
       });
     }
+    function del() {
+      if (!S.size || !ctx.can("nodes.delete")) return false;
+      const r = S.kind === "seg" ? ctx.pin.length ? null : deleteSegments(segs, S.items) : deleteNodes(segs, S.items, pinned);
+      if (!r) return false;
+      segs = r;
+      S.clear();
+      healSmooth(segs);
+      write("del:" + ++uid);
+      build();
+      return true;
+    }
     function insert(p) {
-      let best = null;
-      segs.forEach((s2, i2) => {
-        if (s2.t === "M" || s2.t === "A") return;
-        const P = prevPt(i2), cp2 = s2.t === "Z" ? [P, startOf(i2)] : s2.t === "L" ? [P, s2.pts[0]] : [P, ...s2.pts];
-        for (let k = 1; k < 32; k++) {
-          const q = dc(cp2, k / 32), d = Math.hypot(q[0] - p[0], q[1] - p[1]);
-          if (!best || d < best.d) best = { d, i: i2, t: k / 32, cp: cp2 };
-        }
-      });
+      const best = nearestSeg(segs, p, { arcs: false });
       if (!best) return;
       const { i, t, cp } = best, s = segs[i], [L, R2] = split(cp, t);
-      if (s.t === "Z") segs.splice(i, 0, { t: "L", pts: [L.at(-1)] });
-      else segs.splice(i, 1, { t: s.t, pts: L.slice(1) }, { t: s.t, pts: R2.slice(1) });
+      if (s.t === "Z") segs.splice(i, 0, { t: "L", pts: [L.at(-1)], dirty: 1 });
+      else segs.splice(i, 1, { t: s.t, pts: L.slice(1), dirty: 1 }, { t: s.t, pts: R2.slice(1), dirty: 1 });
+      S.pick("node", i);
+      healSmooth(segs);
       write();
       build();
     }
@@ -1148,8 +1591,8 @@ var SableEdit = (() => {
       };
       const acc = "var(--acc,#2f6fed)", P = () => prevPt(i);
       arcs.push({ i, ell: g.appendChild(mk("ellipse", { fill: "none", stroke: acc, opacity: 0.6, "vector-effect": "non-scaling-stroke", "stroke-dasharray": "5 3" })) });
-      ln(ctr(i), ends(i, 0, 1), { arc: i, dash: 1, op: 0.8 });
-      ln(ctr(i), ends(i, 1, 1), { arc: i, dash: 1, op: 0.8 });
+      ln(ctr(i), ends(i, 0, 1), { vis: () => on(i), dash: 1, op: 0.8 });
+      ln(ctr(i), ends(i, 1, 1), { vis: () => on(i), dash: 1, op: 0.8 });
       const rotPos = () => {
         const q = geom(i);
         if (!q) return null;
@@ -1159,17 +1602,15 @@ var SableEdit = (() => {
       ln(() => {
         const q = geom(i);
         return q && [q.cx - q.rx * q.c, q.cy - q.rx * q.s];
-      }, rotPos, { arc: i });
+      }, rotPos, { vis: () => on(i) });
       const drag = (h, pos, kind, r, fill) => {
-        items.push({ el: h, arc: i, r, get: pos });
+        items.push({ el: h, vis: () => on(i), r, get: pos });
         let off = [0, 0];
         bind(
           h,
           (p0) => {
             const c = pos();
             off = c ? [p0[0] - c[0], p0[1] - c[1]] : [0, 0];
-            act = i;
-            layout();
           },
           (p, p0, ev) => {
             s.arc = arcFit(P(), s.pts[0], s.arc, kind, [p[0] - off[0], p[1] - off[1]], { gap: kind === "rot" ? 0 : gapL(), shift: ev.shiftKey });
@@ -1180,7 +1621,7 @@ var SableEdit = (() => {
       drag(mkh(acc, "move"), ends(i, 1, 1), "ry", 4.5);
       drag(mkh("var(--panel,#fff)", "grab"), rotPos, "rot", 4.5);
       const hm = mkh(acc, "move");
-      items.push({ el: hm, arc: i, always: 1, r: 4.5, get: () => {
+      items.push({ el: hm, vis: () => on(i), r: 4.5, get: () => {
         const q = geom(i);
         return q && q.pt(q.th1 + q.dth / 2);
       } });
@@ -1190,8 +1631,6 @@ var SableEdit = (() => {
         (p0) => {
           const c = geom(i) && geom(i).pt(geom(i).th1 + geom(i).dth / 2);
           offm = c ? [p0[0] - c[0], p0[1] - c[1]] : [0, 0];
-          act = i;
-          layout();
         },
         (p) => {
           s.arc = arcFit(P(), s.pts[0], s.arc, "flip", [p[0] - offm[0], p[1] - offm[1]]);
@@ -1205,22 +1644,41 @@ var SableEdit = (() => {
       arcs = [];
       const pn = pathNodes(segs);
       pinned = new Set(pinnedIdx(pn, ctx.pin).map((k) => pn.seg[k]));
-      if (!(segs[act] && segs[act].t === "A")) act = segs.findIndex((q) => q.t === "A");
+      healSmooth(segs);
+      S.keep("node", (i) => segs[i] && segs[i].t !== "Z");
+      S.keep("seg", (i) => segs[i] && segs[i].t !== "M");
       hit = mk("path", { fill: "none", stroke: "transparent", "stroke-width": 12, "vector-effect": "non-scaling-stroke", style: "pointer-events:stroke;cursor:" + (ctx.can("nodes.insert") ? "copy" : "move") });
       hit.addEventListener("dblclick", (e) => ctx.can("nodes.insert") && insert(ctx.toLocal(e)));
-      hit.addEventListener("pointerdown", (e) => ctx.grab(e, { defer: ctx.can("nodes.insert") }));
+      hit.addEventListener("pointerdown", (e) => {
+        const k = nearestSeg(segs, ctx.toLocal(e)), i = k ? k.i : -1, add = e.shiftKey;
+        ctx.grab(e, { click: () => {
+          if (i < 0 || !segs[i] || segs[i].t === "M") return;
+          const now = performance.now();
+          if (!add && S.only("seg", i)) {
+            if (now - segAt > 500) {
+              S.clear();
+              layout();
+            }
+            return;
+          }
+          segAt = now;
+          S.pick("seg", i, add);
+          layout();
+        } });
+      });
       g.append(hit);
+      sg = g.appendChild(mk("g", { style: "pointer-events:none" }));
       gh = mk("g");
       segs.forEach((s, i) => {
         if (s.t === "C") {
-          ln(() => prevPt(i), () => s.pts[0]);
-          ln(() => s.pts[1], () => s.pts[2]);
-          ctl(s, 0, i);
-          ctl(s, 1, i);
+          ln(() => prevPt(i), () => s.pts[0], { vis: () => on(i, 0) });
+          ln(() => s.pts[1], () => s.pts[2], { vis: () => on(i, 1) });
+          ctl(s, 0, i, 0);
+          ctl(s, 1, i, 1);
         }
         if (s.t === "Q") {
-          ln(() => prevPt(i), () => s.pts[0]);
-          ln(() => s.pts[0], () => s.pts[1]);
+          ln(() => prevPt(i), () => s.pts[0], { vis: () => on(i) });
+          ln(() => s.pts[0], () => s.pts[1], { vis: () => on(i) });
           ctl(s, 0, i);
         }
         if (s.t === "A") arcHandles(s, i);
@@ -1233,42 +1691,120 @@ var SableEdit = (() => {
       const M = ctx.matrix(), T = (p) => {
         const q = new DOMPoint(p[0], p[1]).matrixTransform(M);
         return [q.x, q.y];
-      }, w = ctx.px(1.5);
+      }, info = segInfo(segs), types = segs.map((_, j) => nodeType(segs, j, info)), w = ctx.px(1.5);
       A2(hit, { d: ser(), transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
       lines.forEach((l) => {
-        const a0 = l.a(), b0 = l.b(), on = a0 && b0 && (l.arc === void 0 || l.arc === act);
-        l.el.style.display = on ? "" : "none";
-        if (!on) return;
+        const a0 = l.a(), b0 = l.b(), show = a0 && b0 && (!l.vis || l.vis());
+        l.el.style.display = show ? "" : "none";
+        if (!show) return;
         const a = T(a0), b = T(b0);
         A2(l.el, { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": ctx.px(1), "stroke-dasharray": l.dash ? ctx.px(2) + " " + ctx.px(3) : "none" });
       });
       items.forEach((it) => {
-        const pt = it.arc !== void 0 && it.arc !== act && !it.always ? null : it.get();
+        const pt = it.vis && !it.vis() ? null : it.get();
         it.el.style.display = pt ? "" : "none";
         if (!pt) return;
         const [x, y] = T(pt), r = ctx.px(it.r);
         A2(it.el, it.n ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
+        if (it.n) {
+          const ty = types[it.node], rx = ty === "symmetric" ? r : ty === "smooth" ? r * 0.45 : 0;
+          it.el.setAttribute("rx", rx);
+          it.el.setAttribute("ry", rx);
+          const sl = S.has("node", it.node);
+          if (it.pin) it.el.setAttribute("stroke", sl ? "var(--acc,#2f6fed)" : "#888");
+          else it.el.setAttribute("fill", sl ? "var(--acc,#2f6fed)" : "var(--panel,#fff)");
+        }
       });
+      sg.replaceChildren(...(S.kind === "seg" ? S.items : []).map((i) => segD(segs, i)).filter(Boolean).map((d) => mk("path", { d, fill: "none", stroke: "var(--acc,#2f6fed)", opacity: 0.45, "stroke-width": 6, "stroke-linecap": "round", "vector-effect": "non-scaling-stroke", transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` })));
       arcs.forEach(({ i, ell }) => {
-        const q = i === act && geom(i);
+        const q = on(i) && geom(i);
         ell.style.display = q ? "" : "none";
         if (q) A2(ell, { rx: q.rx, ry: q.ry, transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f}) translate(${q.cx} ${q.cy}) rotate(${q.phi * 180 / Math.PI})` });
       });
     }
+    function setType(js, type) {
+      let out = segs;
+      for (const j of js) {
+        const r = setNodeType(out, j, type);
+        if (r) out = r;
+      }
+      if (out === segs) return;
+      segs = out;
+      write("type:" + ++uid);
+      build();
+    }
+    function setSegType(js, type) {
+      const r = convertSegments(segs, js, type);
+      if (!r) return;
+      segs = r.segs;
+      S.clear();
+      r.sel.forEach((i) => S.pick("seg", i, true));
+      write("seg:" + ++uid);
+      build();
+    }
+    ctx.menu(({ x, y }) => {
+      if (!ctx.can("geometry.edit")) return [];
+      const o = ctx.toOverlay({ clientX: x, clientY: y }), at = segs.findIndex((q, j) => q.t !== "Z" && Math.hypot(...T0(segs[j].pts.at(-1)).map((v, k) => v - o[k])) <= ctx.px(9));
+      if (at >= 0 && !S.has("node", at)) {
+        S.pick("node", at);
+        layout();
+      } else if (at < 0 && document.elementFromPoint(x, y) === hit) {
+        const k = nearestSeg(segs, ctx.toLocal({ clientX: x, clientY: y }));
+        if (k && !S.has("seg", k.i)) {
+          S.pick("seg", k.i);
+          layout();
+        }
+      }
+      if (S.kind === "seg") {
+        const js2 = S.items.filter((j) => segs[j] && segs[j].t !== "M" && segs[j].t !== "Z"), cur = new Set(js2.map((j) => segs[j].t));
+        if (!js2.length) return [];
+        const it2 = (label, t) => {
+          const r = convertSegments(segs, js2, t);
+          return { label, checked: cur.size === 1 && cur.has(t), disabled: !!r && r.segs.length > segs.length && !ctx.can("nodes.insert"), action: () => setSegType(js2, t) };
+        };
+        return [{ label: "Segment type", submenu: [it2("Line", "L"), it2("Quadratic curve", "Q"), it2("Cubic curve", "C"), it2("Arc", "A")] }];
+      }
+      const info = segInfo(segs), js = (S.kind === "node" ? S.items : []).filter((j) => nodeType(segs, j, info)), ts = new Set(js.map((j) => nodeType(segs, j, info)));
+      if (!js.length) return [];
+      const it = (label, t) => ({ label, checked: ts.size === 1 && ts.has(t), action: () => setType(js, t) });
+      return [{ label: "Node type", submenu: [it("Corner", "corner"), it("Smooth", "smooth"), it("Symmetric", "symmetric")] }];
+    });
     ctx.on("view", () => !dead && layout());
+    ctx.on("key", (d) => {
+      if (dead || d.handled || !S.size) return;
+      if (d.key === "Escape") {
+        S.clear();
+        layout();
+        d.handled = true;
+      } else if (d.key === "Delete" || d.key === "Backspace") {
+        del();
+        d.handled = true;
+      }
+    });
     ctx.on("change", ({ el: e, src }) => {
       if (dead || e !== el || src === "widget") return;
       segs = parsePath(el.getAttribute("d") || "");
       build();
     });
     build();
-    return { update() {
-      segs = parsePath(el.getAttribute("d") || "");
-      build();
-    }, destroy() {
-      dead = true;
-      g.remove();
-    } };
+    return {
+      update() {
+        segs = parsePath(el.getAttribute("d") || "");
+        build();
+      },
+      destroy() {
+        dead = true;
+        g.remove();
+      },
+      deleteSelection: del,
+      clearSelection() {
+        S.clear();
+        layout();
+      },
+      get selection() {
+        return S.size ? { kind: S.kind === "seg" ? "segment" : "node", items: S.items } : null;
+      }
+    };
   });
 
   // src/widgets/handle.js
@@ -1441,19 +1977,21 @@ var SableEdit = (() => {
       return p;
     };
     let pts = parse(), items = [], hit, dead = false, mv0 = false, mv1 = false, pinned = /* @__PURE__ */ new Set();
-    const write = () => {
-      const v = pts.map((p) => rnd(p[0]) + "," + rnd(p[1])).join(" "), r = ctx.set("points", v);
+    const S = selection(), min = closed ? 3 : 2;
+    let uid = 0;
+    const write = (own) => {
+      const v = pts.map((p) => rnd(p[0]) + "," + rnd(p[1])).join(" "), r = own ? ctx.batch(() => ctx.set("points", v), own) : ctx.set("points", v);
       if (r === false) {
         pts = parse();
         build();
       } else if (el.getAttribute("points") !== v) pts.splice(0, pts.length, ...parse());
     };
-    function drag(h, start, move) {
+    function drag(h, start, move, click) {
       h.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         h.setPointerCapture(e.pointerId);
         const p0 = ctx.toLocal(e);
-        start();
+        start(e);
         mv0 = mv1;
         mv1 = false;
         const mv = (ev) => {
@@ -1463,8 +2001,21 @@ var SableEdit = (() => {
           layout();
         };
         h.addEventListener("pointermove", mv);
-        h.addEventListener("pointerup", () => h.removeEventListener("pointermove", mv), { once: true });
+        h.addEventListener("pointerup", () => {
+          h.removeEventListener("pointermove", mv);
+          if (!mv1 && click) click();
+        }, { once: true });
       });
+    }
+    function del() {
+      if (!S.size || !ctx.can("nodes.delete")) return false;
+      const r = deletePoints(pts, S.items, min, pinned);
+      if (!r) return false;
+      pts = r;
+      S.clear();
+      write("del:" + ++uid);
+      build();
+      return true;
     }
     function insert(p) {
       let best = null;
@@ -1477,6 +2028,7 @@ var SableEdit = (() => {
       }
       if (!best) return;
       pts.splice(best.i + 1, 0, best.q);
+      S.pick("node", best.i + 1);
       write();
       build();
     }
@@ -1485,30 +2037,48 @@ var SableEdit = (() => {
       items = [];
       hit = mk(tag, { fill: "none", stroke: "transparent", "stroke-width": 12, "vector-effect": "non-scaling-stroke", style: "pointer-events:stroke;cursor:" + (ctx.can("nodes.insert") ? "copy" : "move") });
       hit.addEventListener("dblclick", (e) => ctx.can("nodes.insert") && insert(ctx.toLocal(e)));
-      hit.addEventListener("pointerdown", (e) => ctx.grab(e, { defer: ctx.can("nodes.insert") }));
+      hit.addEventListener("pointerdown", (e) => ctx.grab(e));
       g.append(hit);
       pinned = new Set(pinnedIdx(polyNodes(pts, closed), ctx.pin));
+      S.keep("node", (i) => i < pts.length);
       pts.forEach((_, i) => {
         const h = mk("rect", { style: "pointer-events:all;cursor:move", fill: "var(--panel,#fff)", stroke: "var(--acc,#2f6fed)" });
         g.append(h);
-        items.push({ h, get: () => pts[i], r: 5, n: 1 });
+        items.push({ h, get: () => pts[i], r: 5, n: 1, node: i, pin: pinned.has(i) });
         if (pinned.has(i)) {
           h.style.cursor = "not-allowed";
           h.setAttribute("fill", "#ddd");
           h.setAttribute("stroke", "#888");
-          h.addEventListener("pointerdown", (e) => e.stopPropagation());
+          h.addEventListener("pointerdown", (e) => {
+            e.stopPropagation();
+            S.pick("node", i, e.shiftKey);
+            layout();
+          });
           return;
         }
-        drag(h, () => {
-        }, (p) => {
-          pts[i] = p;
-        });
+        let refs = [], rel = () => {
+        };
+        drag(
+          h,
+          (e) => {
+            rel = S.press("node", i, e.shiftKey);
+            layout();
+            refs = S.items.filter((j) => pts[j] && !pinned.has(j)).map((j) => [j, [...pts[j]]]);
+          },
+          (p, p0) => {
+            if (refs.length === 1) pts[refs[0][0]] = p;
+            else refs.forEach(([j, o]) => pts[j] = [o[0] + p[0] - p0[0], o[1] + p[1] - p0[1]]);
+          },
+          () => {
+            rel();
+            layout();
+          }
+        );
         h.addEventListener("dblclick", (e) => {
           e.stopPropagation();
-          if (!ctx.can("nodes.delete") || mv0 || mv1 || pts.length <= (closed ? 3 : 2)) return;
-          pts.splice(i, 1);
-          write();
-          build();
+          if (mv0 || mv1) return;
+          S.pick("node", i);
+          del();
         });
       });
       layout();
@@ -1522,22 +2092,47 @@ var SableEdit = (() => {
       items.forEach((it) => {
         const [x, y] = T(it.get()), r = ctx.px(it.r);
         A2(it.h, it.n ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
+        const sl = S.has("node", it.node);
+        if (it.pin) it.h.setAttribute("stroke", sl ? "var(--acc,#2f6fed)" : "#888");
+        else it.h.setAttribute("fill", sl ? "var(--acc,#2f6fed)" : "var(--panel,#fff)");
       });
     }
     ctx.on("view", () => !dead && layout());
+    ctx.on("key", (d) => {
+      if (dead || d.handled || !S.size) return;
+      if (d.key === "Escape") {
+        S.clear();
+        layout();
+        d.handled = true;
+      } else if (d.key === "Delete" || d.key === "Backspace") {
+        del();
+        d.handled = true;
+      }
+    });
     ctx.on("change", ({ el: e, src }) => {
       if (dead || e !== el || src === "widget") return;
       pts = parse();
       build();
     });
     build();
-    return { update() {
-      pts = parse();
-      build();
-    }, destroy() {
-      dead = true;
-      g.remove();
-    } };
+    return {
+      update() {
+        pts = parse();
+        build();
+      },
+      destroy() {
+        dead = true;
+        g.remove();
+      },
+      deleteSelection: del,
+      clearSelection() {
+        S.clear();
+        layout();
+      },
+      get selection() {
+        return S.size ? { kind: "node", items: S.items } : null;
+      }
+    };
   });
 
   // src/widgets/fallback.js
@@ -1667,12 +2262,12 @@ var SableEdit = (() => {
     return m;
   };
   function fmtTransform({ a, b, c, d, e, f: f2 }) {
-    const near = (x, y) => Math.abs(x - y) < 1e-7, r = (v) => +v.toFixed(6), q = (v) => +v.toFixed(3);
+    const near2 = (x, y) => Math.abs(x - y) < 1e-7, r = (v) => +v.toFixed(6), q = (v) => +v.toFixed(3);
     const tr = Math.abs(e) > 1e-9 || Math.abs(f2) > 1e-9 ? `translate(${q(e)} ${q(f2)})` : "";
     let rest = "";
-    if (near(b, 0) && near(c, 0)) {
-      if (!(near(a, 1) && near(d, 1))) rest = `scale(${r(a)}${near(a, d) ? "" : " " + r(d)})`;
-    } else if (near(a, d) && near(b, -c) && near(a * a + b * b, 1)) rest = `rotate(${+(Math.atan2(b, a) * 180 / Math.PI).toFixed(4)})`;
+    if (near2(b, 0) && near2(c, 0)) {
+      if (!(near2(a, 1) && near2(d, 1))) rest = `scale(${r(a)}${near2(a, d) ? "" : " " + r(d)})`;
+    } else if (near2(a, d) && near2(b, -c) && near2(a * a + b * b, 1)) rest = `rotate(${+(Math.atan2(b, a) * 180 / Math.PI).toFixed(4)})`;
     else return `matrix(${[a, b, c, d].map(r).join(" ")} ${q(e)} ${q(f2)})`;
     return [tr, rest].filter(Boolean).join(" ") || null;
   }
@@ -1883,19 +2478,11 @@ var SableEdit = (() => {
   }
 
   // src/body.js
-  var DBL = 300;
   function bodyGrab(ctx, { cycle, moved: moved2, done }) {
     const el = ctx.el;
-    let timer = 0, armed = -1e9, busy = false, off = null;
-    const cancel = () => {
-      clearTimeout(timer);
-      timer = 0;
-    };
-    function grab(e, { fresh = false, defer = false } = {}) {
+    let busy = false, off = null;
+    function grab(e, { fresh = false, click } = {}) {
       if (e.button !== 0 || busy) return;
-      const second = performance.now() - armed < DBL;
-      armed = -1e9;
-      cancel();
       const id = e.pointerId, thr = e.pointerType === "touch" ? 8 : 3, x0 = e.clientX, y0 = e.clientY, t0 = el.getAttribute("transform") || "", l0 = ctx.toLocal(e), p0 = ctx.toParent(e);
       const CAP2 = "transform.move", can = ctx.can(CAP2), put = (a, v) => ctx.set(a, v, "widget", CAP2), mv = can ? mover({ el, set: put }) : null;
       let go = false;
@@ -1928,24 +2515,17 @@ var SableEdit = (() => {
         stop();
         if (go && can && !mv) put("transform", fmtTransform(ownM(el)));
         done();
-        if (go || fresh || second || ev.type !== "pointerup") return;
-        if (defer) {
-          armed = performance.now();
-          timer = setTimeout(() => {
-            timer = 0;
-            cycle();
-          }, DBL);
-        } else cycle();
+        if (go || fresh || ev.type !== "pointerup") return;
+        click ? click() : cycle();
       }
       addEventListener("pointermove", move);
       addEventListener("pointerup", end);
       addEventListener("pointercancel", end);
       off = stop;
     }
-    return { grab, cancel, get busy() {
+    return { grab, get busy() {
       return busy;
     }, destroy() {
-      cancel();
       off && off();
     } };
   }
@@ -2116,7 +2696,7 @@ var SableEdit = (() => {
     let P = compilePolicy(opts.policy, { root }), lastDeny = "";
     if (P) P.validate(root);
     const perms = (el) => P ? P.resolve(el) : OPEN, toolOk = (id) => !P || P.toolOk(id);
-    let sel = null, layer = null, halo = null, body = null, subs = [], pref = MODES.includes(opts.mode) ? opts.mode : "scale";
+    let sel = null, layer = null, halo = null, body = null, subs = [], menuOffs = [], start = MODES.includes(opts.mode) ? opts.mode : "scale", pref = start === "edit" ? "scale" : start, editing = start === "edit";
     let tool = "pointer", oneShot = false, gesture = null, swallow = false, menuCtl = null;
     const undoS = [], redoS = [];
     let gid = 0;
@@ -2220,13 +2800,31 @@ var SableEdit = (() => {
     };
     const onDown = () => {
       gid++;
-      body && body.cancel();
     };
     const onKey = (e) => {
       const t = document.activeElement;
       if (/INPUT|TEXTAREA|SELECT/.test(t?.tagName) || t?.isContentEditable) return;
+      if (!(e.ctrlKey || e.metaKey || e.altKey) && /^(Escape|Delete|Backspace)$/.test(e.key)) {
+        const d = { key: e.key, event: e, handled: false };
+        emit("key", d);
+        if (d.handled) {
+          e.preventDefault();
+          return;
+        }
+      }
       if (e.key === "Escape") {
-        if (!gesture && tool !== "pointer") setTool("pointer");
+        if (gesture) return;
+        if (tool !== "pointer") {
+          setTool("pointer");
+          return;
+        }
+        if (sel && cur() === "edit" && xmodes(sel).length) {
+          editing = false;
+          build();
+          emit("mode", cur());
+          return;
+        }
+        if (sel) select(null);
         return;
       }
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -2250,11 +2848,15 @@ var SableEdit = (() => {
       const e = Widgets.find(el), p = perms(el);
       return MODES.filter((m) => modeOk(p, m) && (m !== "edit" || e && !e.generic));
     };
+    const xmodes = (el) => modesFor(el).filter((m) => m !== "edit"), canEdit = (el) => modesFor(el).includes("edit");
     const cur = () => {
-      const ms = modesFor(sel);
-      return ms.includes(pref) ? pref : ms[0];
+      const t = xmodes(sel);
+      if (canEdit(sel) && (editing || !t.length)) return "edit";
+      return t.includes(pref) ? pref : t[0];
     };
     const unsub = () => {
+      menuOffs.forEach((f2) => f2());
+      menuOffs = [];
       subs.forEach(([e, f2]) => {
         const a = hs[e], i = a ? a.indexOf(f2) : -1;
         if (i >= 0) a.splice(i, 1);
@@ -2283,6 +2885,8 @@ var SableEdit = (() => {
       teardown();
       sel = el;
       ctx = null;
+      pref = start === "edit" ? "scale" : start;
+      editing = start === "edit";
       if (tool === "pointer") svg.style.cursor = cursorWas;
       if (el) {
         const toOverlay = (e) => {
@@ -2320,6 +2924,10 @@ var SableEdit = (() => {
             return setAttr(el, a, v, src, cap);
           },
           // false = refused by the policy
+          menu: (f2) => {
+            menuOffs.push(api.addMenu(f2));
+          },
+          // the shape's editor adds items to the right-click menu while it is selected: f({x,y,target,editor}) => [items]
           batch,
           // batch(fn): the writes made inside fn are checked and applied together
           can: (c) => perms(el).can(c),
@@ -2375,6 +2983,54 @@ var SableEdit = (() => {
       svg.style.cursor = sel && !ov.contains(e.target) && pickAt(e) === sel && perms(sel).can("transform.move") ? "move" : cursorWas;
     };
     svg.addEventListener("pointermove", onHover);
+    const editTarget = (e) => ov.contains(e.target) ? e.target.getAttribute?.("data-sable") === "halo" ? sel : null : pickAt(e);
+    const editAt = (t) => {
+      if (t !== sel && opts.pick === false) return false;
+      if (t !== sel) select(t);
+      return api.edit();
+    };
+    const onDbl = (e) => {
+      if (e.button !== 0 || tool !== "pointer" || gesture) return;
+      const t = editTarget(e);
+      t && editAt(t);
+    };
+    svg.addEventListener("dblclick", onDbl);
+    const LONG = 450;
+    let lp = null, lpDone = -1e9;
+    const lpStop = () => {
+      if (!lp) return;
+      clearTimeout(lp.timer);
+      removeEventListener("pointermove", lp.move);
+      removeEventListener("pointerup", lp.end);
+      removeEventListener("pointercancel", lp.end);
+      lp = null;
+    };
+    const onLong = (e) => {
+      lpStop();
+      if (e.pointerType === "mouse" || e.button !== 0 || tool !== "pointer" || gesture) return;
+      const t = editTarget(e);
+      if (!t) return;
+      const id = e.pointerId, x0 = e.clientX, y0 = e.clientY;
+      const fire = () => {
+        lpStop();
+        lpDone = performance.now();
+        editAt(t);
+      };
+      lp = {
+        timer: setTimeout(fire, LONG),
+        fire,
+        move: (ev) => {
+          if (ev.pointerId === id && Math.hypot(ev.clientX - x0, ev.clientY - y0) > 8) lpStop();
+        },
+        end: (ev) => {
+          if (ev.pointerId === id) lpStop();
+        }
+      };
+      addEventListener("pointermove", lp.move);
+      addEventListener("pointerup", lp.end);
+      addEventListener("pointercancel", lp.end);
+    };
+    svg.addEventListener("pointerdown", onLong);
     const isMac = () => /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "");
     const ctxClick = (e) => e.button === 2 || e.button === 0 && e.ctrlKey && isMac();
     const cursorWas = svg.style.cursor;
@@ -2502,6 +3158,15 @@ var SableEdit = (() => {
       return true;
     }
     const onCtx = (e) => {
+      if (lp) {
+        e.preventDefault();
+        lp.fire();
+        return;
+      }
+      if (performance.now() - lpDone < 1e3) {
+        e.preventDefault();
+        return;
+      }
       if (opts.menu === false || gesture) return;
       const t = ov.contains(e.target) ? null : e.target.closest?.(PRIM);
       if (openMenu2(e.clientX, e.clientY, t && root.contains(t) ? t : null)) e.preventDefault();
@@ -2545,6 +3210,9 @@ var SableEdit = (() => {
         svg.removeEventListener("pointerdown", toolDown, true);
         svg.removeEventListener("contextmenu", onCtx);
         svg.removeEventListener("click", onClick);
+        svg.removeEventListener("dblclick", onDbl);
+        svg.removeEventListener("pointerdown", onLong);
+        lpStop();
         svg.removeEventListener("pointerdown", onPress);
         svg.removeEventListener("pointermove", onHover);
         svg.removeEventListener("pointerdown", onDown, true);
@@ -2552,14 +3220,29 @@ var SableEdit = (() => {
         if (!opts.overlay) ov.remove();
       },
       get mode() {
-        return sel ? cur() : pref;
+        return sel ? cur() : editing ? "edit" : pref;
       },
       set mode(m) {
         if (!MODES.includes(m) || m === api.mode) return;
-        pref = m;
+        if (m === "edit") editing = true;
+        else {
+          pref = m;
+          editing = false;
+        }
         if (sel && cur() !== m) return;
         sel && build();
         emit("mode", m);
+      },
+      /* switch the shape (default: the selected one, which is selected first if it is another) to its own edit mode; false if it has none or the policy forbids it */
+      edit(el = sel) {
+        if (el && el !== sel) select(el);
+        if (!sel || !canEdit(sel)) return false;
+        if (cur() !== "edit") {
+          editing = true;
+          build();
+          emit("mode", "edit");
+        }
+        return true;
       },
       get modes() {
         return sel ? modesFor(sel) : MODES;
@@ -2620,11 +3303,22 @@ var SableEdit = (() => {
         if (!perms(sel).selectable) select(null);
         else build();
       },
+      /* the edit-mode layer's own selection (path / polygon / polyline nodes, path segments): for host UIs and for hosts that attach with keys:false */
+      deleteSelection() {
+        return !!(layer && layer.deleteSelection && layer.deleteSelection());
+      },
+      clearSelection() {
+        layer && layer.clearSelection && layer.clearSelection();
+      },
+      get selection() {
+        return layer && layer.selection || null;
+      },
+      // {kind:'node'|'segment', items:[indices]} or null
       cycleMode() {
-        if (!sel) return;
-        const ms = modesFor(sel);
-        if (ms.length < 2) return;
-        pref = ms[(ms.indexOf(cur()) + 1) % ms.length];
+        if (!sel || cur() === "edit") return;
+        const t = xmodes(sel);
+        if (t.length < 2) return;
+        pref = t[(t.indexOf(cur()) + 1) % t.length];
         build();
         emit("mode", pref);
       }
