@@ -33,7 +33,7 @@ test('right-click a segment: Segment type > Cubic curve turns a line into a curv
   expect(await d(page)).toMatch(/^M30 140 C/);
   expect(await page.evaluate(() => ed.selection)).toEqual({ kind: 'segment', items: [1] });
   await page.keyboard.press('Control+z');
-  expect(await d(page)).toBe('M30 140 L100 60 L170 140');
+  expect(await d(page)).toBe('M30 140 L 100 60 L 170 140');   // undo puts back the string as it was in the markup
 });
 
 test('an H segment stays H while its node slides along it, and a diagonal becomes H when a node lands level with the other end', async ({ page }) => {

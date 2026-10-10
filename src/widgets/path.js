@@ -3,6 +3,7 @@ import {mk} from '../dom.js';
 import {parsePath,serPath,arcGeom,arcFit,dc,split,segInfo,segD,nearestSeg,deleteNodes,deleteSegments,healSmooth,fixSmooth,nodeType,handleLinks,dragHandle,setNodeType,retype,convertSegments} from '../path-math.js';
 import {pathNodes,pinnedIdx} from '../policy.js';
 import {selection} from '../selection.js';
+import {subOf,endKind,reverseSub,penNode,canClose,closeSub} from '../pen-math.js';
 /* Path widget: nodes (squares) + bezier handles (dots). Drag to edit; Shift while dragging a
    cubic handle mirrors its partner; double-click the path to add a node, a node to delete it. The policy can take those two
    away (nodes.insert / nodes.delete) and pin nodes: a pinned node is drawn grey and can't be dragged or deleted (its bezier
@@ -17,11 +18,12 @@ import {selection} from '../selection.js';
    other handle swings to stay opposite, a symmetric node's mirrors. Shift while dragging makes the node symmetric; Alt / Option moves the
    handle alone and makes it a corner. The right-click menu has Node type > Corner / Smooth / Symmetric for the selected nodes (the one
    under the pointer is selected first). Smooth nodes are drawn rounded, symmetric ones round.
+   Pen mode (the Path tool, ctx.penOn; see pen() below): a press on empty canvas adds a node after the selected endpoint, a drag pulls its handles.
    Right-click a segment for Segment type > Line / Quadratic curve / Cubic curve / Arc. Lines are written H / V / L, whichever is shortest, for
    the segments an edit touches; the others keep the command they had. */
 Widgets.register(el=>el.tagName==='path',ctx=>{
   const el=ctx.el,g=mk('g'); ctx.overlay.append(g);
-  let segs=parsePath(el.getAttribute('d')||''),items=[],lines=[],hit,gh,sg,dead=false,mv0=false,mv1=false,arcs=[],pinned=new Set(); // mv*: did the last two gestures drag? pinned: segment indices of pinned nodes
+  let segs=parsePath(el.getAttribute('d')||''),items=[],lines=[],hit,gh,sg,pv,dead=false,mv0=false,mv1=false,arcs=[],pinned=new Set(); // mv*: did the last two gestures drag? pinned: segment indices of pinned nodes
   const S=selection(); // nodes are picked by segment index (never a Z), segments by the index of the segment that draws them (never an M)
   const f=v=>+v.toFixed(3), A=(e,o)=>{for(const k in o)e.setAttribute(k,o[k])};
   const ser=()=>serPath(segs);
@@ -34,7 +36,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     n.forEach((q,i)=>{segs[i].pts=q.pts;if(q.arc)segs[i].arc=q.arc;if(q.sm)segs[i].sm=1;else delete segs[i].sm}); // the stored d is the truth, S / T flag included
   };
   /* own: a history key, so a change that isn't part of a pointer gesture (a key, a menu item) is an undo step of its own */
-  const write=own=>{fixSmooth(segs);retype(segs);const v=ser(),r=own?ctx.batch(()=>ctx.set('d',v),own):ctx.set('d',v);if(r===false){segs=parsePath(el.getAttribute('d')||'');build()}else if(el.getAttribute('d')!==v)sync()};
+  const write=own=>{fixSmooth(segs);retype(segs);const v=ser(),r=own?ctx.batch(()=>ctx.set('d',v),own):ctx.set('d',v);if(r===false){segs=parsePath(el.getAttribute('d')||'');build();return false}if(el.getAttribute('d')!==v)sync();return true};
   const prevPt=i=>{for(let j=i-1;j>=0;j--)if(segs[j].t!=='Z')return segs[j].pts.at(-1);return segs[i].pts[0]};
   const startOf=i=>{for(let j=i;j>=0;j--)if(segs[j].t==='M')return segs[j].pts[0]};
   const pnode=i=>{for(let j=i-1;j>=0;j--)if(segs[j].t!=='Z')return j;return -1}; // the node a segment starts from
@@ -63,8 +65,12 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
       h.style.cursor='not-allowed';h.setAttribute('fill','#ddd');h.setAttribute('stroke','#888');
       h.addEventListener('pointerdown',e=>{e.stopPropagation();S.pick('node',i,e.shiftKey);layout()});return;
     }
-    let refs=[],rel=()=>{};
+    let refs=[],rel=()=>{},wasHead=false;
     bind(h,(p0,e)=>{ // a node carries its adjacent bezier handles along, and so does every other selected node
+      if(ctx.penOn){ // pen: the other end of the path being drawn closes it; the end node itself, clicked, finishes
+        const v=view();wasHead=head()===i;
+        if(v&&!wasHead&&canClose(v.segs,v.head)&&subOf(v.segs,v.head).m===v.map(i)&&allowed()){closeGesture(e,v);return}
+      }
       rel=S.press('node',i,e.shiftKey);layout();
       refs=[];for(const j of S.items){
         const q=segs[j];if(!q||q.t==='Z'||pinned.has(j))continue;const nx=segs[j+1];
@@ -72,9 +78,9 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
         if(q.t==='L')q.dirty=1;if(nx?.t==='L')nx.dirty=1; // lines that change length: H / V / L is re-decided for them (see retype)
       }
       refs=refs.map(([q,k])=>[q,k,[...q.pts[k]]]);
-    },(p,p0)=>{const dx=p[0]-p0[0],dy=p[1]-p0[1];refs.forEach(([q,k,o])=>q.pts[k]=[o[0]+dx,o[1]+dy])},()=>{rel();layout()});
+    },(p,p0)=>{const dx=p[0]-p0[0],dy=p[1]-p0[1];refs.forEach(([q,k,o])=>q.pts[k]=[o[0]+dx,o[1]+dy])},()=>{rel();layout();if(wasHead&&ctx.penOn)ctx.penFinish()});
     h.addEventListener('dblclick',e=>{
-      e.stopPropagation(); if(mv0||mv1)return;
+      e.stopPropagation(); if(mv0||mv1||ctx.penOn)return; // (with the pen armed a double-click on its end node is just two clicks: add, then finish)
       S.pick('node',i);del();
     });
   }
@@ -140,14 +146,14 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
         segAt=now;S.pick('seg',i,add);layout();
       }});
     });
-    g.append(hit);sg=g.appendChild(mk('g',{style:'pointer-events:none'}));gh=mk('g');
+    g.append(hit);sg=g.appendChild(mk('g',{style:'pointer-events:none'}));pv=g.appendChild(mk('path',{fill:'none',stroke:'var(--acc,#2f6fed)','stroke-dasharray':'5 4','vector-effect':'non-scaling-stroke',style:'pointer-events:none;display:none'}));gh=mk('g');
     segs.forEach((s,i)=>{
       if(s.t==='C'){ln(()=>prevPt(i),()=>s.pts[0],{vis:()=>on(i,0)});ln(()=>s.pts[1],()=>s.pts[2],{vis:()=>on(i,1)});ctl(s,0,i,0);ctl(s,1,i,1)}
       if(s.t==='Q'){ln(()=>prevPt(i),()=>s.pts[0],{vis:()=>on(i)});ln(()=>s.pts[0],()=>s.pts[1],{vis:()=>on(i)});ctl(s,0,i)}
       if(s.t==='A')arcHandles(s,i);
     });
     segs.forEach((s,i)=>s.t!=='Z'&&node(s,i));
-    g.append(gh);layout();
+    pendUI();g.append(gh);layout();
   }
   function layout(){
     const M=ctx.matrix(),T=p=>{const q=new DOMPoint(p[0],p[1]).matrixTransform(M);return [q.x,q.y]},info=segInfo(segs),types=segs.map((_,j)=>nodeType(segs,j,info)),w=ctx.px(1.5);
@@ -162,6 +168,99 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     arcs.forEach(({i,ell})=>{const q=on(i)&&geom(i);ell.style.display=q?'':'none';
       if(q)A(ell,{rx:q.rx,ry:q.ry,transform:`matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f}) translate(${q.cx} ${q.cy}) rotate(${q.phi*180/Math.PI})`})});
   }
+  /* ---- pen mode (the Path tool is armed, ctx.penOn; attach.js starts shapes and tidies up, src/pen-math.js is the arithmetic) ----
+     The pen continues from the one selected node when it is an endpoint of an open subpath (from a first node it reverses that subpath
+     first, so it only ever appends). A press adds a node at once (written, an undo step of its own); a drag pulls handles: the new node is
+     symmetric (Alt: broken). The outgoing half of a pulled handle belongs to no segment until the next node exists, so it is kept in `pends`
+     (by node, so an undo gets it back) and shown as a hollow dot you can still drag; the next press from that node uses it. */
+  let drawM=null; // the M of the subpath being drawn (to find its end again after an undo)
+  const pends=[]; // {at, out:{pt, sym}}: the outgoing handle a drag pulled at the node `at`; keyed by the node's point, so an undo that brings a node back brings its handle back
+  const head=()=>S.kind==='node'&&S.size===1&&endKind(segs,S.items[0])?S.items[0]:-1;
+  const same=(a,b)=>Math.abs(a[0]-b[0])<.01&&Math.abs(a[1]-b[1])<.01;
+  const setPend=(q,out)=>{const i=pends.findIndex(r=>same(r.at,q));if(i>=0)pends.splice(i,1);if(out)pends.push({at:[...q],out})};
+  const pendNow=()=>{const h=head(),r=h>=0&&pends.find(r=>same(r.at,segs[h].pts.at(-1)));return r?r.out:null}; // the selected end node's pending handle
+  /* the segments and head to draw from: the same, or with the subpath reversed when the head is its first node (map: old node index -> new) */
+  function view(){
+    const h=head();if(h<0)return null;
+    if(endKind(segs,h)==='start'){const r=reverseSub(segs,h);if(r)return {segs:r.segs,head:r.map(h),map:r.map}}
+    return {segs,head:h,map:i=>i};
+  }
+  function allowed(){ // continuing a shape adds nodes to it: it needs the edit mode and nodes.insert, and a pin refuses (nodes would renumber, an end would stop being an end)
+    const c=!ctx.can('geometry.edit')?'geometry.edit':!ctx.can('nodes.insert')?'nodes.insert':null;
+    if(c){ctx.deny(c,'capability');return false}
+    if(ctx.pin.length){ctx.deny('nodes.insert','pinned');return false}
+    return true;
+  }
+  function pendUI(){ // the pending outgoing handle: a line and a hollow dot (hidden unless there is one)
+    ln(()=>pendNow()&&segs[head()].pts.at(-1),()=>pendNow()&&pendNow().pt,{});
+    const h=mk('circle',{style:'pointer-events:all;cursor:move',fill:'var(--panel,#fff)',stroke:'var(--acc,#2f6fed)'});
+    items.push({el:h,get:()=>ctx.penOn&&pendNow()?pendNow().pt:null,r:3.5});gh.append(h);
+    bind(h,()=>{},p=>{const q=pendNow(),k=head();if(!q)return;q.pt=p;const s=segs[k];if(q.sym&&s.t==='C')s.pts[1]=[2*s.pts[2][0]-p[0],2*s.pts[2][1]-p[1]]}); // a symmetric node: its incoming control follows
+  }
+  function restoreHead(){ // undo / redo walk the drawing: the selection goes to the end of the subpath being drawn, wherever it was left
+    if(drawM===null||!segs[drawM]||segs[drawM].t!=='M')return;
+    const {last,closed}=subOf(segs,drawM);if(!closed){S.clear();S.pick('node',last);layout()}
+  }
+  function doClose(v){
+    const r=closeSub(v.segs,v.head,{kind:ctx.penSeg,out:pendNow()});if(!r)return false;
+    segs=r.segs;S.clear();pends.length=0;drawM=null;write('penc:'+(++uid));build();return true;
+  }
+  /* a press on the other end node of the path being drawn: it closes at once, and while the button stays down a drag shapes the closing segment
+     (the control of a quadratic, the bend of an arc, the handle of a cubic), just as dragging a new node does. The node under the pointer is gone
+     after the first rebuild, so the drag is followed on the window. */
+  function closeGesture(e,v){
+    const key='penc:'+(++uid),thr=e.pointerType==='touch'?8:3,x0=e.clientX,y0=e.clientY,out=pendNow();let dragging=false;
+    const run=h=>{const r=closeSub(v.segs,v.head,{kind:ctx.penSeg,out,drag:h});if(!r)return false;segs=r.segs;S.clear();pends.length=0;drawM=null;if(!write(key))return false;build();return true};
+    if(!run(null))return;
+    const mv=ev=>{if(dead)return up();if(!dragging&&Math.hypot(ev.clientX-x0,ev.clientY-y0)<=thr)return;dragging=true;run(ctx.fit(ctx.toLocal(ev)))};
+    const up=()=>{window.removeEventListener('pointermove',mv);window.removeEventListener('pointerup',up);window.removeEventListener('pointercancel',up)};
+    window.addEventListener('pointermove',mv);window.addEventListener('pointerup',up);window.addEventListener('pointercancel',up);
+  }
+  const pen={
+    canContinue:()=>head()>=0,
+    canClose(){const v=view();return !!v&&canClose(v.segs,v.head)&&ctx.can('nodes.insert')&&!ctx.pin.length},
+    close(){const v=view();return !!v&&allowed()&&doClose(v)},
+    clear(){S.clear();pends.length=0;drawM=null;layout()}, // the path is done: no node selected, so the next press starts a new one
+    hover(e){ // the rubber band: the segment a press here would add
+      const v=e&&ctx.penOn?view():null,r=v&&penNode(v.segs,v.head,ctx.fit(ctx.toLocal(e)),{kind:ctx.penSeg,out:pendNow()}),d=r&&segD(r.segs,r.idx);
+      if(!d){pv.style.display='none';return}
+      const M=ctx.matrix();A(pv,{d,transform:`matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})`});pv.style.display='';
+    },
+    /* a press: -> a gesture {move, end, cancel} like a creation tool's, or null when refused. o.first: the shape was just made empty for this press
+       (its first node); o.key: the undo key every write of this press shares (and the shape's creation, when it is the first) */
+    begin(e,o){
+      pv.style.display='none';
+      const key=o.key,thr=e.pointerType==='touch'?8:3,x0=e.clientX,y0=e.clientY,h0=head(),sig=q=>q.map(z=>z.t).join('');let p=ctx.fit(ctx.toLocal(e)),dragging=false,wrote=false,dead=false,newPt=null;
+      if(o.first){
+        segs=[{t:'M',pts:[p]}];drawM=0;pends.length=0;
+        if(!write(key)||!segs.length)return null;
+        wrote=true;S.pick('node',0);build();
+        return {move(_,ev){
+          if(!dragging&&Math.hypot(ev.clientX-x0,ev.clientY-y0)<=thr)return;dragging=true; // the first node has no incoming side: the drag only pulls its outgoing handle
+          setPend(segs[0].pts[0],{pt:ctx.fit(ctx.toLocal(ev)),sym:false});layout();
+        },end(){layout();return null},cancel(){ctx.undo()}};
+      }
+      if(!allowed())return null;
+      const v=view();if(!v)return null;
+      const base=v.segs,hd=v.head,out=pendNow();
+      const apply=(h,alt)=>{
+        const r=penNode(base,hd,p,{kind:ctx.penSeg,out,drag:h,alt});if(!r){dead=true;return}
+        const was=sig(segs);segs=r.segs;S.pick('node',r.idx);drawM=subOf(segs,r.idx).m;
+        if(!write(key)){dead=true;return}
+        wrote=true;const nd=segs[r.idx];newPt=[...nd.pts.at(-1)];setPend(newPt,r.out&&{pt:r.out.pt,sym:r.out.sym});
+        sig(segs)!==was?build():layout();
+      };
+      apply(null,false);
+      if(dead)return null;
+      return {move(_,ev){
+        if(dead)return;
+        if(!dragging&&Math.hypot(ev.clientX-x0,ev.clientY-y0)<=thr)return;dragging=true;
+        apply(ctx.fit(ctx.toLocal(ev)),ev.altKey);
+      },end(){layout();return null},cancel(){ // Esc during the press: it never happened (the node it added is the newest undo step)
+        if(wrote)ctx.undo();if(newPt)setPend(newPt,null);S.pick('node',h0);layout();
+      }};
+    },
+  };
   /* right-click menu: Node type for the selected nodes. A right-click on a node selects it first (unless it is already selected). */
   function setType(js,type){
     let out=segs;for(const j of js){const r=setNodeType(out,j,type);if(r)out=r}
@@ -171,7 +270,9 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
      segments stay selected, so a line turned into a curve can be dragged by its handles straight away. */
   function setSegType(js,type){
     const r=convertSegments(segs,js,type);if(!r)return;
-    segs=r.segs;S.clear();r.sel.forEach(i=>S.pick('seg',i,true));write('seg:'+(++uid));build();
+    segs=r.segs;S.clear();r.sel.forEach(i=>S.pick('seg',i,true));
+    if(ctx.penOn){const k=r.sel.at(-1);if(endKind(segs,k)==='end'){S.clear();S.pick('node',k)}} // drawing: the pen's endpoint stays the selection, so the next click still continues
+    write('seg:'+(++uid));build();
   }
   ctx.menu(({x,y})=>{
     if(!ctx.can('geometry.edit'))return [];
@@ -195,10 +296,10 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
   ctx.on('view',()=>!dead&&layout());
   ctx.on('key',d=>{ // Escape clears the selection, Delete / Backspace remove it (see del)
     if(dead||d.handled||!S.size)return;
-    if(d.key==='Escape'){S.clear();layout();d.handled=true}else if(d.key==='Delete'||d.key==='Backspace'){del();d.handled=true}
+    if(d.key==='Escape'){if(ctx.penOn)return;S.clear();layout();d.handled=true}else if(d.key==='Delete'||d.key==='Backspace'){del();d.handled=true}
   });
-  ctx.on('change',({el:e,src})=>{if(dead||e!==el||src==='widget')return;segs=parsePath(el.getAttribute('d')||'');build()});
+  ctx.on('change',({el:e,src})=>{if(dead||e!==el||src==='widget')return;segs=parsePath(el.getAttribute('d')||'');build();if(ctx.penOn)restoreHead()});
   build();
   return {update(){segs=parsePath(el.getAttribute('d')||'');build()},destroy(){dead=true;g.remove()},
-    deleteSelection:del,clearSelection(){S.clear();layout()},get selection(){return S.size?{kind:S.kind==='seg'?'segment':'node',items:S.items}:null}};
+    pen,deleteSelection:del,clearSelection(){S.clear();layout()},get selection(){return S.size?{kind:S.kind==='seg'?'segment':'node',items:S.items}:null}};
 });

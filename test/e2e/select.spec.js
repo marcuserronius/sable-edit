@@ -66,7 +66,7 @@ test('path: a click on the stroke selects that segment; Delete cuts the path the
   await page.mouse.click(m.x, m.y); await page.waitForTimeout(450);
   expect(await sel(page)).toEqual({ kind: 'segment', items: [1] });
   await page.keyboard.press('Delete');
-  expect(await page.locator('#pl').getAttribute('d')).toMatch(/^M[\d. ]+M[\d. ]+L[\d. ]+$/);   // M end ... a piece is left
+  expect(await page.locator('#pl').getAttribute('d')).toMatch(/^M[\d. ]+L[\d. ]+$/);   // cutting the first segment leaves the single-segment piece (the lone first node is dropped)
   await page.keyboard.press('Control+z');
   expect(await page.locator('#pl').getAttribute('d')).toMatch(/^M[\d. ]+L[\d. ]+L[\d. ]+$/);
 });

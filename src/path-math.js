@@ -321,7 +321,7 @@ function endTangent(segs,i,info){
   return unit(vec(to,from));
 }
 /* the circular arc from `from` to `to` through `mid`, as arc parameters, or null when the three are in a line */
-function arcThrough(from,mid,to){
+export function arcThrough(from,mid,to){
   const [ax,ay]=from,[bx,by]=mid,[cx,cy]=to,d=2*(ax*(by-cy)+bx*(cy-ay)+cx*(ay-by));
   const sc=Math.hypot(cx-ax,cy-ay);if(Math.abs(d)<1e-6*sc*sc)return null;
   const a2=ax*ax+ay*ay,b2=bx*bx+by*by,c2=cx*cx+cy*cy,ux=(a2*(by-cy)+b2*(cy-ay)+c2*(ay-by))/d,uy=(a2*(cx-bx)+b2*(ax-cx)+c2*(bx-ax))/d,R=Math.hypot(ax-ux,ay-uy);

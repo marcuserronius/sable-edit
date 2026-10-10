@@ -144,7 +144,7 @@ test('path edit mode: dragging the stroke moves the path; a click selects a segm
   await page.keyboard.press('Control+z');
   expect(await page.locator('#pa').getAttribute('d')).toBe(d0);
   // a double-click adds a node and does not leave edit mode, not even after the click-wait has passed
-  const nodes = d => (d.match(/[MLCQAZ]/g) || []).length, n0 = nodes(await page.locator('#pa').getAttribute('d'));
+  const nodes = d => (d.match(/[MLHVCQAZ]/g) || []).length, n0 = nodes(await page.locator('#pa').getAttribute('d'));
   await page.mouse.dblclick(p.x, p.y);
   await page.waitForTimeout(500);
   expect(nodes(await page.locator('#pa').getAttribute('d'))).toBeGreaterThan(n0);

@@ -29,7 +29,7 @@ test('right-click opens the tool menu with both submenus; Esc closes it', async 
   const p = await at(page, .5, .5);
   await page.mouse.click(p.x, p.y, { button: 'right' });
   await expect(page.getByRole('menu')).toHaveCount(1);
-  await expect(menu(page, 'Use Once')).toBeVisible();
+  await expect(menu(page, 'Use Once')).toHaveCount(0); // TODO(remove): use-once is switched off (ONCE in src/attach.js); every tool is sticky
   await expect(menu(page, 'Switch Tool')).toBeVisible();
   await menu(page, 'Switch Tool').hover();
   await expect(page.getByRole('menu')).toHaveCount(2);
@@ -69,7 +69,8 @@ test('Switch Tool > Circle is sticky: each drag draws a circle (centre = press, 
   await expect(page.locator('#tool')).toHaveText('tool: pointer');
 });
 
-test('Use Once > Circle draws one circle, selects it, then reverts to the pointer; undo/redo the creation', async ({ page }) => {
+// TODO(remove): use-once is switched off (ONCE in src/attach.js); delete this test with the code
+test.skip('Use Once > Circle draws one circle, selects it, then reverts to the pointer; undo/redo the creation', async ({ page }) => {
   await page.goto('/demo/');
   const p = await at(page, .5, .5);
   await pick(page, p, 'Use Once', 'Circle');
@@ -90,10 +91,10 @@ test('Use Once > Circle draws one circle, selects it, then reverts to the pointe
   await expect(page.locator('#sketch circle')).toHaveCount(0);
 });
 
-test('a click without a drag creates nothing and does not use up Use Once; Esc mid-drag cancels', async ({ page }) => {
+test('circle tool: a click without a drag creates nothing; Esc mid-drag cancels', async ({ page }) => {
   await page.goto('/demo/');
   const p = await at(page, .5, .5);
-  await pick(page, p, 'Use Once', 'Circle');
+  await pick(page, p, 'Switch Tool', 'Circle');
   await page.mouse.click(p.x, p.y);
   await expect(page.locator('#sketch circle')).toHaveCount(0);
   await expect(page.locator('#tool')).toHaveText('tool: circle');
@@ -102,7 +103,7 @@ test('a click without a drag creates nothing and does not use up Use Once; Esc m
   await page.keyboard.press('Escape');
   await page.mouse.move(p.x + 60, p.y + 10); await page.mouse.up();
   await expect(page.locator('#sketch circle')).toHaveCount(0);
-  await expect(page.locator('#tool')).toHaveText('tool: circle'); // cancelled gestures do not consume the one-shot
+  await expect(page.locator('#tool')).toHaveText('tool: circle'); // a cancelled gesture leaves the tool armed
 });
 
 test('with a tool armed, pressing on an existing shape draws instead of selecting or moving it', async ({ page }) => {
@@ -150,13 +151,13 @@ test('Switch Tool > Rectangle: press = one corner, release = the opposite corner
 test('rect tool: a flat drag (no height) makes nothing', async ({ page }) => {
   await page.goto('/demo/');
   const p = await at(page, .5, .5);
-  await pick(page, p, 'Use Once', 'Rectangle');
+  await pick(page, p, 'Switch Tool', 'Rectangle');
   await drag(page, p, 80, 0);
   await expect(page.locator('#sketch rect')).toHaveCount(0);
   await expect(page.locator('#tool')).toHaveText('tool: rect');
   await drag(page, p, 80, 40);
   await expect(page.locator('#sketch rect')).toHaveCount(1);
-  await expect(page.locator('#tool')).toHaveText('tool: pointer');
+  await expect(page.locator('#tool')).toHaveText('tool: rect');
 });
 
 test('Switch Tool > Ellipse: the drag is its bounding box, in any direction', async ({ page }) => {
@@ -177,10 +178,10 @@ test('Switch Tool > Ellipse: the drag is its bounding box, in any direction', as
   await expect(els).toHaveCount(1);
 });
 
-test('Use Once > Line: press = start, release = end; a click makes nothing; the new line is selected', async ({ page }) => {
+test('Switch Tool > Line: press = start, release = end; a click makes nothing', async ({ page }) => {
   await page.goto('/demo/');
   const p = await at(page, .4, .6);
-  await pick(page, p, 'Use Once', 'Line');
+  await pick(page, p, 'Switch Tool', 'Line');
   await page.mouse.click(p.x, p.y);
   await expect(page.locator('#sketch line')).toHaveCount(0);
   await expect(page.locator('#tool')).toHaveText('tool: line');
@@ -189,6 +190,6 @@ test('Use Once > Line: press = start, release = end; a click makes nothing; the 
   const line = page.locator('#sketch line');
   await expect(line).toHaveCount(1);
   for (const [k, v] of Object.entries({ x1: a.x, y1: a.y, x2: b.x, y2: b.y })) expect(Math.abs(+await line.getAttribute(k) - v)).toBeLessThan(.05);
-  await expect(page.locator('#tool')).toHaveText('tool: pointer');
-  await expect(page.locator('#readout')).toHaveText('<line> selected');
+  await expect(page.locator('#tool')).toHaveText('tool: line');
+  await expect(page.locator('#readout')).toHaveText('<line> created');
 });

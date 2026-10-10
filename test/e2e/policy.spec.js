@@ -179,7 +179,7 @@ test('move-only grant: the shape drags but has no modes; scale-only offers just 
 
 test('create restricts the tools the menu and the API offer', async ({ page }) => {
   await page.goto('/demo/');
-  expect(await page.evaluate(() => ed.tools.map(t => t.id))).toEqual(['circle', 'rect', 'ellipse', 'line']);
+  expect(await page.evaluate(() => ed.tools.map(t => t.id))).toEqual(['circle', 'rect', 'ellipse', 'line', 'path']);
   await page.evaluate(() => { ed.policy = { rules: [{ select: '.edit', can: 'all' }], create: ['circle'] }; });
   expect(await page.evaluate(() => ed.tools.map(t => t.id))).toEqual(['circle']);
   await page.evaluate(() => { ed.tool = 'rect'; });
@@ -436,7 +436,9 @@ test('snap: a dragged node lands on the grid and its bezier handles go with it, 
 test('snap: a bezier handle dragged on its own snaps by itself; the node it belongs to stays', async ({ page }) => {
   await load(page, 'pinned');
   const p = await at(page, 'pinned', 100, 110);
-  await page.mouse.click(p.x, p.y);
+  await page.mouse.click(p.x, p.y);                                    // the first click selects the path ...
+  await page.waitForTimeout(450);
+  await page.mouse.click(p.x, p.y);                                    // ... the next one selects the node, and its handles show
   await drag(page, await at(page, 'pinned', 80, 50), 13, 9);           // the handle before the anchor
   const n = nums(await attr(page, 'pinned', 'd'));
   expect([n[6], n[7]]).toEqual([100, 110]);                            // the anchor did not move

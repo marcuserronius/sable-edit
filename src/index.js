@@ -8,6 +8,7 @@ import './tools/circle.js';
 import './tools/rect.js';
 import './tools/ellipse.js';
 import './tools/line.js';
+import './tools/path.js';
 export {attach} from './attach.js';
 export {Widgets as widgets} from './registry.js';
 export {Tools as tools} from './tools.js';

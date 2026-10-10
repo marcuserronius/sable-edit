@@ -26,7 +26,7 @@ const drag = async (page, from, to, mod) => {
   if (mod) await page.keyboard.up(mod);
 };
 const d = page => page.locator('#pa').getAttribute('d');
-const D = 'M30 140 C 40 60, 80 60, 100 100 C 130 140, 160 140, 180 100';   // a smooth (not symmetric) node at 100,100
+const D = 'M30 140 C 40 60, 80 60, 100 100 C 130 160, 160 140, 180 100';   // a smooth (not symmetric) node at 100,100: its handles (80,60) and (130,160) are on one line
 
 test('dragging a handle of a smooth node keeps the other handle on the line; Alt breaks the link', async ({ page }) => {
   await setup(page, D);
@@ -39,7 +39,8 @@ test('dragging a handle of a smooth node keeps the other handle on the line; Alt
   const d0 = await d(page);
   await drag(page, await at(page, 80, 60), await at(page, 80, 20), 'Alt');
   const after = await d(page);
-  expect(after.split(' C')[1]).toBe(d0.split(' C')[1]);                                 // the other segment is untouched
+  const last6 = s => (s.match(/-?[\d.]+/g) || []).slice(-6).map(Number);
+  expect(last6(after)).toEqual(last6(d0));                                              // the other segment is untouched
 });
 
 test('Shift while dragging makes the node symmetric and the path data uses S', async ({ page }) => {

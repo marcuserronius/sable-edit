@@ -11,7 +11,7 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
 
 ## Permissions: not done yet
 - Snap: a grid origin offset (the grid is anchored at 0,0 of the shape's own coordinates); a user-held modifier to bypass it is deliberately absent (snap is a constraint, not a preference, so a host who wants a convenience grid for users needs a separate, non-policy option); a mirrored bezier handle (Shift-drag) snaps independently of its partner, so exact mirroring can be off by up to half a grid step; transforms other than moves (scale, rotate, skew) aren't snapped.
-- Bounds: new shapes from the creation tools aren't clamped as they're drawn (the first edit after is); bounds are in the parent's coordinate
+- Bounds: new shapes from the one-gesture creation tools (not the pen, which fits every node to the bounds and the snap grid) aren't clamped as they're drawn (the first edit after is); bounds are in the parent's coordinate
   system only (a `space: 'root'` option would help hosts whose shapes sit in translated groups); bezier handles count as nodes, which is
   stricter than the curve itself (a looser mode could clamp the true curve extent); stroke width isn't counted; scale / rotate / skew
   are refused at the wall rather than clamped; a bounded `g` is measured with getBBox (children's transforms included).
@@ -27,8 +27,13 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
 - Stage 2: merge edit mode into the tools, so the "create X" tool is also the "edit X" tool (a double-click arms the shape's own tool on it):
   - Needs the pen tools first (path, polygon, polyline): a tool that lives past one press-drag-release, click-to-add-nodes, finish on
     Enter / double-click / Esc; the same lifecycle change the merge needs
-  - Decide sticky vs once: if tools were sticky by default (stay armed, Esc to leave), "once" is just a flag that leaves the tool after one
-    object; the editor would attach to the object just made either way, so the double standard may not be worth it
+    - DONE (pen stage 1): the path pen (`src/pen-math.js`, the path widget's pen mode, `pen:true` tools in attach.js). Open: the pen stage 2
+      polygon / polyline (a polygon inserts the new vertex after the selected vertex; a polyline continues from either end)
+    - Pen follow-ups: Shift to constrain the angle; a drag at the closing node doesn't yet smooth the joint with the first segment's handle; a pen option for "extend but not create"
+      (needs the create/edit permission split below); the selected path's 12px stroke blocks starting a new path right next to it
+  - DONE: sticky vs once decided: every tool is sticky. "Use once" is switched off (`ONCE` in `src/attach.js`) and its code is flagged
+    `TODO(remove)`: delete `ONCE`, `oneShot`, the `once` argument of `setTool` and the Use Once menu entry, make `ed.useTool` an alias or
+    drop it, and delete the skipped Use Once test in `test/e2e/tools.spec.js`
   - Press on an object of the tool's own type edits it; anywhere else creates (so a new rect can't start on top of an existing rect)
   - Create and edit stay separate permissions (a host may allow editing existing paths but not drawing new ones)
   - `ed.mode = 'edit'` and the `mode` event keep working, reporting edit while an edit tool is active
