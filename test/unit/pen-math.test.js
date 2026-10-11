@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePath, serPath, arcGeom, retype } from '../../src/path-math.js';
-import { subOf, endKind, reverseSub, penNode, canClose, closeSub } from '../../src/pen-math.js';
+import { subOf, endKind, reverseSub, penNode, canClose, closeSub, polyCount, polyEnd, polyAdd, headAfter } from '../../src/pen-math.js';
 import { Tools } from '../../src/tools.js';
 import '../../src/tools/path.js';
+import '../../src/tools/polygon.js';
+import '../../src/tools/polyline.js';
 
 const P = d => parsePath(d), D = s => serPath(retype(s));
 
@@ -102,4 +104,42 @@ test('the path pen tool is registered as a pen tool, and says what a drawable pa
   assert.ok(t.pen); assert.equal(t.tag, 'path');
   const mk = d => ({ getAttribute: () => d });
   assert.equal(t.real(mk('M1 2')), false); assert.equal(t.real(mk('')), false); assert.equal(t.real(mk('M1 2 L3 4')), true);
+});
+
+test('polyCount: the points an attribute holds, however it is written', () => {
+  assert.equal(polyCount(''), 0); assert.equal(polyCount(null), 0); assert.equal(polyCount('0,0'), 1);
+  assert.equal(polyCount('1,2 3,4  5,6'), 3); assert.equal(polyCount('1 2, 3 4 -5.5e1 .5'), 3);
+});
+
+test('polyEnd: a polygon has no ends (every vertex is where the pen can continue), a polyline has two', () => {
+  assert.equal(polyEnd(4, 2, true), 'ring'); assert.equal(polyEnd(4, 4, true), null); assert.equal(polyEnd(4, -1, true), null);
+  assert.equal(polyEnd(1, 0, false), 'lone'); assert.equal(polyEnd(3, 0, false), 'start'); assert.equal(polyEnd(3, 2, false), 'end');
+  assert.equal(polyEnd(3, 1, false), null);
+});
+
+test('polyAdd: a polygon takes the vertex right after the head; a polyline grows on the head\'s end, in front for the first vertex', () => {
+  const P = [[0, 0], [10, 0], [10, 10]], before = JSON.stringify(P);
+  assert.deepEqual(polyAdd(P, 0, [5, 5], true), { pts: [[0, 0], [5, 5], [10, 0], [10, 10]], idx: 1 });
+  assert.deepEqual(polyAdd(P, 2, [5, 5], true), { pts: [[0, 0], [10, 0], [10, 10], [5, 5]], idx: 3 });
+  assert.deepEqual(polyAdd(P, 2, [5, 5], false), { pts: [[0, 0], [10, 0], [10, 10], [5, 5]], idx: 3 });
+  assert.deepEqual(polyAdd(P, 0, [5, 5], false), { pts: [[5, 5], [0, 0], [10, 0], [10, 10]], idx: 0 });
+  assert.deepEqual(polyAdd([[1, 1]], 0, [2, 2], false), { pts: [[1, 1], [2, 2]], idx: 1 });
+  assert.equal(JSON.stringify(P), before);
+});
+
+test('headAfter: undo puts the pen back on the vertex it added after; redo on the vertex that came back; nothing changes for a move', () => {
+  const A = [[0, 0], [10, 0], [10, 10]], B = [[0, 0], [5, 5], [10, 0], [10, 10]];
+  assert.equal(headAfter(B, A, true), 0);       // polygon: the vertex went from index 1, the head was 0
+  assert.equal(headAfter(A, B, true), 1);
+  assert.equal(headAfter([[0, 0], [10, 0], [10, 10], [5, 5]], A, false), 2);          // polyline appended: the head was the last
+  assert.equal(headAfter([[5, 5], [0, 0], [10, 0], [10, 10]], [[0, 0], [10, 0], [10, 10]], false), 0); // prepended: the head is the first again
+  assert.equal(headAfter(A, [[1, 1], [10, 0], [10, 10]], true), -1);
+});
+
+test('the polygon and polyline tools are pen tools; a polygon needs three vertices to be real, a polyline two', () => {
+  const g = Tools.get('polygon'), l = Tools.get('polyline'), mk = p => ({ getAttribute: () => p });
+  assert.ok(g.pen && l.pen); assert.equal(g.tag, 'polygon'); assert.equal(l.tag, 'polyline');
+  assert.equal(g.real(mk('0,0 5,5')), false); assert.equal(g.real(mk('0,0 5,5 9,0')), true);
+  assert.equal(l.real(mk('0,0')), false); assert.equal(l.real(mk('0,0 5,5')), true);
+  assert.equal(g.blank.points, '0,0');
 });

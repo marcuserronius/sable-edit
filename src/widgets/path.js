@@ -230,7 +230,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
        (its first node); o.key: the undo key every write of this press shares (and the shape's creation, when it is the first) */
     begin(e,o){
       pv.style.display='none';
-      const key=o.key,thr=e.pointerType==='touch'?8:3,x0=e.clientX,y0=e.clientY,h0=head(),sig=q=>q.map(z=>z.t).join('');let p=ctx.fit(ctx.toLocal(e)),dragging=false,wrote=false,dead=false,newPt=null;
+      const key=o.key,thr=e.pointerType==='touch'?8:3,x0=e.clientX,y0=e.clientY,h0=head();let p=ctx.fit(ctx.toLocal(e)),dragging=false,wrote=false,dead=false,newPt=null;
       if(o.first){
         segs=[{t:'M',pts:[p]}];drawM=0;pends.length=0;
         if(!write(key)||!segs.length)return null;
@@ -245,10 +245,10 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
       const base=v.segs,hd=v.head,out=pendNow();
       const apply=(h,alt)=>{
         const r=penNode(base,hd,p,{kind:ctx.penSeg,out,drag:h,alt});if(!r){dead=true;return}
-        const was=sig(segs);segs=r.segs;S.pick('node',r.idx);drawM=subOf(segs,r.idx).m;
+        segs=r.segs;S.pick('node',r.idx);drawM=subOf(segs,r.idx).m;
         if(!write(key)){dead=true;return}
         wrote=true;const nd=segs[r.idx];newPt=[...nd.pts.at(-1)];setPend(newPt,r.out&&{pt:r.out.pt,sym:r.out.sym});
-        sig(segs)!==was?build():layout();
+        build(); // penNode hands back fresh segment objects every time, and the overlay's nodes and handles hold on to the old ones
       };
       apply(null,false);
       if(dead)return null;

@@ -179,7 +179,7 @@ test('move-only grant: the shape drags but has no modes; scale-only offers just 
 
 test('create restricts the tools the menu and the API offer', async ({ page }) => {
   await page.goto('/demo/');
-  expect(await page.evaluate(() => ed.tools.map(t => t.id))).toEqual(['circle', 'rect', 'ellipse', 'line', 'path']);
+  expect(await page.evaluate(() => ed.tools.map(t => t.id))).toEqual(['circle', 'rect', 'ellipse', 'line', 'path', 'polygon', 'polyline']);
   await page.evaluate(() => { ed.policy = { rules: [{ select: '.edit', can: 'all' }], create: ['circle'] }; });
   expect(await page.evaluate(() => ed.tools.map(t => t.id))).toEqual(['circle']);
   await page.evaluate(() => { ed.tool = 'rect'; });

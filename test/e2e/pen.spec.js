@@ -164,3 +164,23 @@ test('Esc during a press-drag undoes just that node and keeps the pen armed', as
   expect(await D(page)).toBe(d0);
   await expect(page.locator('#tool')).toHaveText('tool: path');
 });
+
+test('pressing and dragging a middle node while drawing just moves it; its handles go with it and the display stays attached', async ({ page }) => {
+  await page.goto('/demo/');
+  await arm(page);
+  const a = await at(page, .2, .5), b = await at(page, .4, .5), c = await at(page, .7, .5);
+  await page.mouse.click(a.x, a.y); await page.mouse.click(b.x, b.y);
+  await drag(page, c, 40, 60);                                           // the last node is a curve
+  const d0 = await D(page);
+  await drag(page, b, 0, -50);                                           // a middle node: not an endpoint, so it is the editor's node drag
+  const d1 = await D(page);
+  expect(d1).not.toBe(d0);
+  await expect(page.locator('#sketch path')).toHaveCount(1);
+  expect(await page.evaluate(() => ed.selection)).toEqual({ kind: 'node', items: [1] });
+  await drag(page, { x: b.x, y: b.y - 50 }, 0, 50);                       // grab it where it is now (a stale square would still sit at the old spot) and put it back
+  const m0 = /^M([\d.]+) ([\d.]+) H([\d.]+) C(.*)$/.exec(d0), m2 = /^M([\d.]+) ([\d.]+) L([\d.]+) ([\d.]+) C(.*)$/.exec(await D(page));   // back where it was (the line may be written L now)
+  expect(m2 && [m2[1], m2[2], m2[3], m2[4], m2[5]]).toEqual([m0[1], m0[2], m0[3], m0[2], m0[4]]);
+  const e = await at(page, .5, .8);
+  await page.mouse.click(e.x, e.y);                                       // a middle node is selected, not an endpoint: the next press starts a new path
+  await expect(page.locator('#sketch path')).toHaveCount(2);
+});

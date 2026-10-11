@@ -118,7 +118,8 @@ export function attach(svg,opts={}){
   const unsub=()=>{menuOffs.forEach(f=>f());menuOffs=[];subs.forEach(([e,f])=>{const a=hs[e],i=a?a.indexOf(f):-1;if(i>=0)a.splice(i,1)});subs=[]};
   const teardown=()=>{layer?.destroy();halo?.destroy();layer=halo=null;unsub();ov.replaceChildren()};
   let ctx=null;
-  function build(){
+  let bseq=0;
+  function build(){bseq++;
     teardown();const m=cur();if(!m)return; // no mode available: nothing to draw
     // the grab halo goes first so it sits under the handles; path/polygon/polyline edit mode brings its own (it also owns double-click)
     halo=m==='edit'&&/^(path|polygon|polyline)$/.test(sel.tagName)?null:haloWidget(ctx);
@@ -278,9 +279,9 @@ export function attach(svg,opts={}){
   menuB.push(toolItems);
   const PEN_SEGS=[['auto','Auto (click: line, drag: curve)'],['L','Line'],['Q','Quadratic curve'],['C','Cubic curve'],['A','Arc']];
   const penItems=()=>{ // while a pen is armed: what its next segment is, and finishing the path
-    if(!penOn())return [];const pn=layer&&layer.pen;
-    return [{label:'Next segment',submenu:PEN_SEGS.map(([k,l])=>({label:l,checked:penSeg===k,action:()=>{api.penSegment=k}}))},
-      {label:'Close path',disabled:!(pn&&pn.canClose()),action:()=>pn&&pn.close()},{label:'Finish path',action:penFinish}];
+    if(!penOn())return [];const T=Tools.get(tool),pn=layer&&layer.pen;
+    return [...(T.tag==='path'?[{label:'Next segment',submenu:PEN_SEGS.map(([k,l])=>({label:l,checked:penSeg===k,action:()=>{api.penSegment=k}}))},
+      {label:'Close path',disabled:!(pn&&pn.canClose()),action:()=>pn&&pn.close()}]:[]),{label:'Finish '+T.label.toLowerCase(),action:penFinish}];
   };
   menuB.push(penItems);
   /* hover (mouse / pen, not touch): the dashed rubber band of the next segment, and a cursor that says continue or new path */
@@ -327,6 +328,9 @@ export function attach(svg,opts={}){
     /* the edit-mode layer's own selection (path / polygon / polyline nodes, path segments): for host UIs and for hosts that attach with keys:false */
     deleteSelection(){return !!(layer&&layer.deleteSelection&&layer.deleteSelection())},clearSelection(){layer&&layer.clearSelection&&layer.clearSelection()},
     get selection(){return (layer&&layer.selection)||null}, // {kind:'node'|'segment', items:[indices]} or null
-    cycleMode(){if(!sel||cur()==='edit')return;const t=xmodes(sel);if(t.length<2)return;cycLog.push({t:performance.now(),from:pref});if(cycLog.length>4)cycLog.shift();pref=t[(t.indexOf(cur())+1)%t.length];build();emit('mode',pref)}};
+    cycleMode(){if(!sel||cur()==='edit')return;const t=xmodes(sel);if(t.length<2)return;cycLog.push({t:performance.now(),from:pref});if(cycLog.length>4)cycLog.shift();pref=t[(t.indexOf(cur())+1)%t.length];
+      /* rebuilt a tick later: a click on a thin path lands on its halo, and a halo deleted before the click is over means the browser delivers
+         neither the click nor the dblclick that may follow. (Anything that builds in between, like entering edit mode, makes this one stale.) */
+      const n=bseq,s=sel;setTimeout(()=>{if(bseq===n&&sel===s)build()});emit('mode',pref)}};
   return api;
 }

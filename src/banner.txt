@@ -76,7 +76,7 @@
     with the pen armed it also has Next segment, Close path and Finish path. Items are {label, action, checked, disabled, submenu:[...]} or {sep:1}.
   Tools:    the pointer tool is the editing behaviour described below; other tools create shapes. Built in: circle (press = centre, drag = radius),
             rect (press = one corner, release = the opposite corner, any direction), ellipse (the same two corners, of its bounding box),
-            line (press = start point, release = end point), path (the pen, below).
+            line (press = start point, release = end point), path, polygon, polyline (the pens, below).
             A tool is armed -> every press is its gesture (nothing is selected, handles stay out of the way); Esc cancels a drag.
             A created shape is one undo step; the tool stays armed with nothing selected (every tool is sticky: 'use once' is switched off).
             Path pen: the path editor with the pen on, so the selected path keeps its handles. The pen continues from the selected node of the selected
@@ -84,6 +84,9 @@
             handles (symmetric node, S form; Alt = break), press the other end of the path (2+ nodes) = close, a drag on that press shapes the closing segment. Click the end node again, double-click it, Enter
             or menu > Finish path = done (the path stays selected). Esc = leave the pen, path still selected in scale mode; Esc again = deselect.
             Every node is an undo step; the policy applies to each one (geometry.edit + nodes.insert, snap grid and bounds, a pinned path isn't extended).
+            Polygon / polyline pens: a press adds a vertex (a drag moves it until release); a polyline grows on the end the selected vertex is on (in front
+            for its first vertex), a polygon takes the vertex right after the selected one; click the vertex the pen is on / Enter / menu > Finish = done;
+            fewer than 3 (2) vertices are thrown away on leaving. Same policy, undo, Esc and rubber band rules as the path pen.
             A tool with `pen:true` has no begin(): {id, label, pen:true, tag, blank: attrs of the empty shape, real(el) -> has it a segment yet}.
             SableEdit.tools.register({id, label, cursor, begin(t, p0, ev) -> {move(p,ev), end(p,ev) -> element|null, cancel?()}})
             t = {host, px(n), make(tag, attrs)}; points are in the createIn container's coordinates.

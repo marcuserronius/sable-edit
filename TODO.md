@@ -27,8 +27,7 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
 - Stage 2: merge edit mode into the tools, so the "create X" tool is also the "edit X" tool (a double-click arms the shape's own tool on it):
   - Needs the pen tools first (path, polygon, polyline): a tool that lives past one press-drag-release, click-to-add-nodes, finish on
     Enter / double-click / Esc; the same lifecycle change the merge needs
-    - DONE (pen stage 1): the path pen (`src/pen-math.js`, the path widget's pen mode, `pen:true` tools in attach.js). Open: the pen stage 2
-      polygon / polyline (a polygon inserts the new vertex after the selected vertex; a polyline continues from either end)
+    - DONE (pen stage 1): the path pen (`src/pen-math.js`, the path widget's pen mode, `pen:true` tools in attach.js). Also DONE: the polygon and polyline pens (a polygon inserts the new vertex after the selected vertex; a polyline continues from either end)
     - Pen follow-ups: Shift to constrain the angle; a drag at the closing node doesn't yet smooth the joint with the first segment's handle; a pen option for "extend but not create"
       (needs the create/edit permission split below); the selected path's 12px stroke blocks starting a new path right next to it
   - DONE: sticky vs once decided: every tool is sticky. "Use once" is switched off (`ONCE` in `src/attach.js`) and its code is flagged

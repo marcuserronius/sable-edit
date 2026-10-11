@@ -76,7 +76,7 @@
     with the pen armed it also has Next segment, Close path and Finish path. Items are {label, action, checked, disabled, submenu:[...]} or {sep:1}.
   Tools:    the pointer tool is the editing behaviour described below; other tools create shapes. Built in: circle (press = centre, drag = radius),
             rect (press = one corner, release = the opposite corner, any direction), ellipse (the same two corners, of its bounding box),
-            line (press = start point, release = end point), path (the pen, below).
+            line (press = start point, release = end point), path, polygon, polyline (the pens, below).
             A tool is armed -> every press is its gesture (nothing is selected, handles stay out of the way); Esc cancels a drag.
             A created shape is one undo step; the tool stays armed with nothing selected (every tool is sticky: 'use once' is switched off).
             Path pen: the path editor with the pen on, so the selected path keeps its handles. The pen continues from the selected node of the selected
@@ -84,6 +84,9 @@
             handles (symmetric node, S form; Alt = break), press the other end of the path (2+ nodes) = close, a drag on that press shapes the closing segment. Click the end node again, double-click it, Enter
             or menu > Finish path = done (the path stays selected). Esc = leave the pen, path still selected in scale mode; Esc again = deselect.
             Every node is an undo step; the policy applies to each one (geometry.edit + nodes.insert, snap grid and bounds, a pinned path isn't extended).
+            Polygon / polyline pens: a press adds a vertex (a drag moves it until release); a polyline grows on the end the selected vertex is on (in front
+            for its first vertex), a polygon takes the vertex right after the selected one; click the vertex the pen is on / Enter / menu > Finish = done;
+            fewer than 3 (2) vertices are thrown away on leaving. Same policy, undo, Esc and rubber band rules as the path pen.
             A tool with `pen:true` has no begin(): {id, label, pen:true, tag, blank: attrs of the empty shape, real(el) -> has it a segment yet}.
             SableEdit.tools.register({id, label, cursor, begin(t, p0, ev) -> {move(p,ev), end(p,ev) -> element|null, cancel?()}})
             t = {host, px(n), make(tag, attrs)}; points are in the createIn container's coordinates.
@@ -1473,6 +1476,25 @@ function closeSub(segs, head, o = {}) {
   res.splice(at + 1, 0, { t: "Z", pts: [] });
   return { segs: healSmooth(res), idx: m };
 }
+var NUM2 = /[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
+var polyCount = (s) => Math.floor(((s || "").match(NUM2) || []).length / 2);
+var polyEnd = (n, j, closed) => j < 0 || j >= n ? null : closed ? "ring" : n === 1 ? "lone" : j === n - 1 ? "end" : j === 0 ? "start" : null;
+function polyAdd(pts, head, p, closed) {
+  const res = pts.map((q) => [...q]);
+  if (polyEnd(pts.length, head, closed) === "start") {
+    res.unshift([...p]);
+    return { pts: res, idx: 0 };
+  }
+  res.splice(head + 1, 0, [...p]);
+  return { pts: res, idx: head + 1 };
+}
+function headAfter(old, now, closed) {
+  if (old.length === now.length) return -1;
+  const n = Math.min(old.length, now.length), same2 = (a, b) => a[0] === b[0] && a[1] === b[1];
+  let k = 0;
+  while (k < n && same2(old[k], now[k])) k++;
+  return now.length < old.length ? closed || k > 0 ? Math.max(0, k - 1) : 0 : k;
+}
 
 // src/widgets/path.js
 Widgets.register((el) => el.tagName === "path", (ctx) => {
@@ -1929,7 +1951,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
        (its first node); o.key: the undo key every write of this press shares (and the shape's creation, when it is the first) */
     begin(e, o) {
       pv.style.display = "none";
-      const key = o.key, thr = e.pointerType === "touch" ? 8 : 3, x0 = e.clientX, y0 = e.clientY, h0 = head(), sig = (q) => q.map((z) => z.t).join("");
+      const key = o.key, thr = e.pointerType === "touch" ? 8 : 3, x0 = e.clientX, y0 = e.clientY, h0 = head();
       let p = ctx.fit(ctx.toLocal(e)), dragging = false, wrote = false, dead2 = false, newPt = null;
       if (o.first) {
         segs = [{ t: "M", pts: [p] }];
@@ -1961,7 +1983,6 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
           dead2 = true;
           return;
         }
-        const was = sig(segs);
         segs = r.segs;
         S.pick("node", r.idx);
         drawM = subOf(segs, r.idx).m;
@@ -1973,7 +1994,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
         const nd = segs[r.idx];
         newPt = [...nd.pts.at(-1)];
         setPend(newPt, r.out && { pt: r.out.pt, sym: r.out.sym });
-        sig(segs) !== was ? build() : layout();
+        build();
       };
       apply(null, false);
       if (dead2) return null;
@@ -2257,7 +2278,7 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
     for (let i = 0; i + 1 < n.length; i += 2) p.push([+n[i], +n[i + 1]]);
     return p;
   };
-  let pts = parse(), items = [], hit, dead = false, mv0 = false, mv1 = false, pinned = /* @__PURE__ */ new Set();
+  let pts = parse(), items = [], hit, pv, dead = false, mv0 = false, mv1 = false, pinned = /* @__PURE__ */ new Set();
   const S = selection(), min = closed ? 3 : 2;
   let uid = 0;
   const write = (own) => {
@@ -2265,7 +2286,10 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
     if (r === false) {
       pts = parse();
       build();
-    } else if (el.getAttribute("points") !== v) pts.splice(0, pts.length, ...parse());
+      return false;
+    }
+    if (el.getAttribute("points") !== v) pts.splice(0, pts.length, ...parse());
+    return true;
   };
   function drag(h, start, move, click) {
     h.addEventListener("pointerdown", (e) => {
@@ -2320,6 +2344,7 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
     hit.addEventListener("dblclick", (e) => ctx.can("nodes.insert") && insert(ctx.toLocal(e)));
     hit.addEventListener("pointerdown", (e) => ctx.grab(e));
     g.append(hit);
+    pv = g.appendChild(mk("polyline", { fill: "none", stroke: "var(--acc,#2f6fed)", "stroke-dasharray": "5 4", "vector-effect": "non-scaling-stroke", style: "pointer-events:none;display:none" }));
     pinned = new Set(pinnedIdx(polyNodes(pts, closed), ctx.pin));
     S.keep("node", (i) => i < pts.length);
     pts.forEach((_, i) => {
@@ -2338,10 +2363,11 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
         return;
       }
       let refs = [], rel = () => {
-      };
+      }, wasHead = false;
       drag(
         h,
         (e) => {
+          wasHead = ctx.penOn && head() === i;
           rel = S.press("node", i, e.shiftKey);
           layout();
           refs = S.items.filter((j) => pts[j] && !pinned.has(j)).map((j) => [j, [...pts[j]]]);
@@ -2353,11 +2379,12 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
         () => {
           rel();
           layout();
+          if (wasHead) ctx.penFinish();
         }
       );
       h.addEventListener("dblclick", (e) => {
         e.stopPropagation();
-        if (mv0 || mv1) return;
+        if (mv0 || mv1 || ctx.penOn) return;
         S.pick("node", i);
         del();
       });
@@ -2382,6 +2409,7 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
   ctx.on("key", (d) => {
     if (dead || d.handled || !S.size) return;
     if (d.key === "Escape") {
+      if (ctx.penOn) return;
       S.clear();
       layout();
       d.handled = true;
@@ -2392,11 +2420,96 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
   });
   ctx.on("change", ({ el: e, src }) => {
     if (dead || e !== el || src === "widget") return;
+    const old = pts;
     pts = parse();
     build();
+    if (ctx.penOn && drawing) {
+      const k = headAfter(old, pts, closed);
+      if (k >= 0) {
+        S.clear();
+        S.pick("node", k);
+        layout();
+      }
+    }
   });
+  let drawing = false;
+  const head = () => S.kind === "node" && S.size === 1 && polyEnd(pts.length, S.items[0], closed) ? S.items[0] : -1;
+  function allowed() {
+    const c = !ctx.can("geometry.edit") ? "geometry.edit" : !ctx.can("nodes.insert") ? "nodes.insert" : null;
+    if (c) {
+      ctx.deny(c, "capability");
+      return false;
+    }
+    if (ctx.pin.length) {
+      ctx.deny("nodes.insert", "pinned");
+      return false;
+    }
+    return true;
+  }
+  const pen = {
+    canContinue: () => head() >= 0,
+    canClose: () => false,
+    close: () => false,
+    // a polygon is closed already, and a polyline stays open
+    clear() {
+      S.clear();
+      drawing = false;
+      layout();
+    },
+    // the shape is done: no vertex selected, so the next press starts a new one
+    hover(e) {
+      const h = e && ctx.penOn ? head() : -1;
+      if (h < 0) {
+        pv.style.display = "none";
+        return;
+      }
+      const q = ctx.fit(ctx.toLocal(e)), line = [pts[h], q], M = ctx.matrix();
+      if (closed && pts.length > 1) line.push(pts[(h + 1) % pts.length]);
+      A2(pv, { points: line.map((z) => z.join(",")).join(" "), transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
+      pv.style.display = "";
+    },
+    /* a press: -> a gesture {move, end, cancel} like a creation tool's, or null when refused. o.first: the shape was just made for this press (its
+       first vertex); o.key: the undo key every write of this press shares (and the shape's creation, when it is the first) */
+    begin(e, o) {
+      pv.style.display = "none";
+      const key = o.key, thr = e.pointerType === "touch" ? 8 : 3, x0 = e.clientX, y0 = e.clientY, h0 = head();
+      let idx = 0, wrote = false, dragging = false;
+      if (o.first) {
+        pts.splice(0, pts.length, ctx.fit(ctx.toLocal(e)));
+        drawing = true;
+        if (!write(key) || !pts.length) return null;
+      } else {
+        if (!allowed()) return null;
+        const r = polyAdd(pts, h0, ctx.fit(ctx.toLocal(e)), closed);
+        pts.splice(0, pts.length, ...r.pts);
+        idx = r.idx;
+        drawing = true;
+        S.pick("node", idx);
+        if (!write(key)) return null;
+      }
+      wrote = true;
+      S.pick("node", idx);
+      build();
+      return { move(_, ev) {
+        if (dead || !pts[idx] || !dragging && Math.hypot(ev.clientX - x0, ev.clientY - y0) <= thr) return;
+        dragging = true;
+        pts[idx] = ctx.fit(ctx.toLocal(ev));
+        write(key);
+        layout();
+      }, end() {
+        layout();
+        return null;
+      }, cancel() {
+        if (wrote) ctx.undo();
+        if (dead) return;
+        if (h0 >= 0) S.pick("node", h0);
+        layout();
+      } };
+    }
+  };
   build();
   return {
+    pen,
     update() {
       pts = parse();
       build();
@@ -2534,6 +2647,12 @@ Tools.register({ id: "line", label: "Line", cursor: "crosshair", begin(t, p0) {
 
 // src/tools/path.js
 Tools.register({ id: "path", label: "Path", cursor: "crosshair", pen: true, tag: "path", blank: { d: "M0 0" }, real: (el) => ((el.getAttribute("d") || "").match(/[A-Za-z]/g) || []).length >= 2 });
+
+// src/tools/polygon.js
+Tools.register({ id: "polygon", label: "Polygon", cursor: "crosshair", pen: true, tag: "polygon", blank: { points: "0,0" }, real: (el) => polyCount(el.getAttribute("points")) >= 3 });
+
+// src/tools/polyline.js
+Tools.register({ id: "polyline", label: "Polyline", cursor: "crosshair", pen: true, tag: "polyline", blank: { points: "0,0" }, real: (el) => polyCount(el.getAttribute("points")) >= 2 });
 
 // src/xform.js
 var ownM = (el) => {
@@ -3164,7 +3283,9 @@ function attach(svg, opts = {}) {
     ov.replaceChildren();
   };
   let ctx = null;
+  let bseq = 0;
   function build() {
+    bseq++;
     teardown();
     const m = cur();
     if (!m) return;
@@ -3554,14 +3675,13 @@ function attach(svg, opts = {}) {
   const PEN_SEGS = [["auto", "Auto (click: line, drag: curve)"], ["L", "Line"], ["Q", "Quadratic curve"], ["C", "Cubic curve"], ["A", "Arc"]];
   const penItems = () => {
     if (!penOn()) return [];
-    const pn = layer && layer.pen;
-    return [
+    const T = Tools.get(tool), pn = layer && layer.pen;
+    return [...T.tag === "path" ? [
       { label: "Next segment", submenu: PEN_SEGS.map(([k, l]) => ({ label: l, checked: penSeg === k, action: () => {
         api.penSegment = k;
       } })) },
-      { label: "Close path", disabled: !(pn && pn.canClose()), action: () => pn && pn.close() },
-      { label: "Finish path", action: penFinish }
-    ];
+      { label: "Close path", disabled: !(pn && pn.canClose()), action: () => pn && pn.close() }
+    ] : [], { label: "Finish " + T.label.toLowerCase(), action: penFinish }];
   };
   menuB.push(penItems);
   const onPenHover = (e) => {
@@ -3772,7 +3892,10 @@ function attach(svg, opts = {}) {
       cycLog.push({ t: performance.now(), from: pref });
       if (cycLog.length > 4) cycLog.shift();
       pref = t[(t.indexOf(cur()) + 1) % t.length];
-      build();
+      const n = bseq, s = sel;
+      setTimeout(() => {
+        if (bseq === n && sel === s) build();
+      });
       emit("mode", pref);
     }
   };

@@ -67,3 +67,25 @@ export function closeSub(segs,head,o={}){
   res=res.map(cp);res.splice(at+1,0,{t:'Z',pts:[]});
   return {segs:healSmooth(res),idx:m};
 }
+
+/* ---- polygon / polyline pens: vertex lists, no curves ---- */
+const NUM=/[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
+/* how many points a polygon / polyline `points` attribute holds */
+export const polyCount=s=>Math.floor(((s||'').match(NUM)||[]).length/2);
+/* what vertex j of n is to the pen: 'ring' (any vertex of a polygon: a ring has no ends), 'start' | 'end' | 'lone' (a polyline's only vertex), or null (inside a polyline) */
+export const polyEnd=(n,j,closed)=>j<0||j>=n?null:closed?'ring':n===1?'lone':j===n-1?'end':j===0?'start':null;
+/* the pen adds a vertex at p after vertex `head`: a polygon's goes right after it (the ring grows where you are), a polyline's goes on the end the head
+   is on (before the first vertex when the head is the first) -> {pts, idx (the new vertex)} */
+export function polyAdd(pts,head,p,closed){
+  const res=pts.map(q=>[...q]);
+  if(polyEnd(pts.length,head,closed)==='start'){res.unshift([...p]);return {pts:res,idx:0}}
+  res.splice(head+1,0,[...p]);return {pts:res,idx:head+1};
+}
+/* an undo / redo changed the vertex list from old to now: which vertex is the pen's head again? (the one the last vertex was added after, or the vertex
+   that came back); -1 when no vertex came or went */
+export function headAfter(old,now,closed){
+  if(old.length===now.length)return -1;
+  const n=Math.min(old.length,now.length),same=(a,b)=>a[0]===b[0]&&a[1]===b[1];let k=0;
+  while(k<n&&same(old[k],now[k]))k++;
+  return now.length<old.length?(closed||k>0?Math.max(0,k-1):0):k; // removed at k: the head was the one before it (a polyline's removed first vertex leaves its old first)
+}
