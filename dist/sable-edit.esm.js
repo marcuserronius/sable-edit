@@ -18,7 +18,7 @@
             policy (get/set: swap the whole policy at runtime),
             canUndo/canRedo, mode (get/set), modes (what the selected shape offers), cycleMode(),
             selection (path / polygon / polyline edit mode: {kind:'node'|'segment', items:[indices]} or null), deleteSelection(), clearSelection()
-            (path edit mode also has node types: corner / smooth / symmetric; Shift-drag a handle = symmetric, Alt-drag = break the link; an editor can add
+            (a path whose last point is on its first, Z or not, has one joined node there: one square, both halves move / delete together, handles pair across it; a Z that draws a line leaves two independent nodes. Path edit mode also has node types: corner / smooth / symmetric; Shift-drag a handle = symmetric, Alt-drag = break the link; an editor can add
             right-click menu items through ctx.menu(f))
             edit mode: double-click / long-press a shape, or ed.edit(); Esc = back to scale, then deselect; ed.mode='edit' still works
             path segments: right-click > Segment type (L / Q / C / A); lines the editor touches are written H / V / L, shortest first
@@ -491,6 +491,20 @@ function fixSmooth(segs) {
   });
   return segs;
 }
+function twins(segs, info = segInfo(segs)) {
+  const tw = segs.map(() => -1);
+  for (let m = 0; m < segs.length; m++) {
+    if (segs[m].t !== "M") continue;
+    let e = m;
+    for (let k = m + 1; k < segs.length && segs[k].t !== "M" && segs[k].t !== "Z"; k++) e = k;
+    if (e > m && near(info[e].to, info[m].to)) {
+      tw[m] = e;
+      tw[e] = m;
+    }
+  }
+  return tw;
+}
+var twinOf = (segs, j, info) => twins(segs, info)[j] ?? -1;
 function nodeHandles(segs, j, info = segInfo(segs)) {
   const s = segs[j];
   if (!s || s.t === "Z") return null;
@@ -504,7 +518,7 @@ function nodeHandles(segs, j, info = segInfo(segs)) {
     }
     e = k;
   }
-  const wrap = z >= 0 && e > m && near(info[e].to, info[m].to);
+  const wrap = e > m && near(info[e].to, info[m].to);
   const endH = (i) => {
     const q = segs[i];
     return q && q.t === "C" ? { i, k: 1 } : q && q.t === "Q" ? { i, k: 0 } : null;
@@ -1418,7 +1432,8 @@ function endKind(segs, j) {
   if (!s || s.t === "Z") return null;
   const { m, last, closed } = subOf(segs, j);
   if (closed) return null;
-  return m === last ? j === m ? "lone" : null : j === last ? "end" : j === m ? "start" : null;
+  const k = m === last ? j === m ? "lone" : null : j === last ? "end" : j === m ? "start" : null;
+  return (k === "end" || k === "start") && twinOf(segs, j) >= 0 ? null : k;
 }
 function reverseSub(segs, m) {
   const { last, closed } = subOf(segs, m);
@@ -1459,7 +1474,7 @@ function penNode(segs, head, p, o = {}) {
 }
 function canClose(segs, head) {
   const { m, last, closed } = subOf(segs, head);
-  return !closed && head === last && last > m;
+  return !closed && head === last && last > m && twinOf(segs, head) < 0;
 }
 function closeSub(segs, head, o = {}) {
   if (!canClose(segs, head)) return null;
@@ -1500,7 +1515,7 @@ function headAfter(old, now, closed) {
 Widgets.register((el) => el.tagName === "path", (ctx) => {
   const el = ctx.el, g = mk("g");
   ctx.overlay.append(g);
-  let segs = parsePath(el.getAttribute("d") || ""), items = [], lines = [], hit, gh, sg, pv, dead = false, mv0 = false, mv1 = false, arcs = [], pinned = /* @__PURE__ */ new Set();
+  let segs = parsePath(el.getAttribute("d") || ""), tw = [], items = [], lines = [], hit, gh, sg, pv, dead = false, mv0 = false, mv1 = false, arcs = [], pinned = /* @__PURE__ */ new Set();
   const S = selection();
   const f2 = (v) => +v.toFixed(3), A2 = (e, o) => {
     for (const k in o) e.setAttribute(k, o[k]);
@@ -1548,7 +1563,9 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     for (let j = i - 1; j >= 0; j--) if (segs[j].t !== "Z") return j;
     return -1;
   };
-  const on = (i, w) => S.has("seg", i) || w !== 1 && S.has("node", pnode(i)) || w !== 0 && S.has("node", i);
+  const nsel = (j) => j >= 0 && (S.has("node", j) || tw[j] >= 0 && S.has("node", tw[j]));
+  const on = (i, w) => S.has("seg", i) || w !== 1 && nsel(pnode(i)) || w !== 0 && nsel(i);
+  const halves = (js) => [...new Set(js.flatMap((j) => tw[j] >= 0 ? [j, tw[j]] : [j]))];
   function bind(h, onStart, onMove, onClick) {
     h.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
@@ -1610,7 +1627,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
       rel = S.press("node", i, e.shiftKey);
       layout();
       refs = [];
-      for (const j of S.items) {
+      for (const j of halves(S.items)) {
         const q = segs[j];
         if (!q || q.t === "Z" || pinned.has(j)) continue;
         const nx = segs[j + 1];
@@ -1638,7 +1655,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
   }
   function del() {
     if (!S.size || !ctx.can("nodes.delete")) return false;
-    const r = S.kind === "seg" ? ctx.pin.length ? null : deleteSegments(segs, S.items) : deleteNodes(segs, S.items, pinned);
+    const r = S.kind === "seg" ? ctx.pin.length ? null : deleteSegments(segs, S.items) : deleteNodes(segs, halves(S.items), pinned);
     if (!r) return false;
     segs = r;
     S.clear();
@@ -1745,6 +1762,12 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     healSmooth(segs);
     S.keep("node", (i) => segs[i] && segs[i].t !== "Z");
     S.keep("seg", (i) => segs[i] && segs[i].t !== "M");
+    tw = twins(segs);
+    if (S.kind === "node" && S.items.some((j) => tw[j] >= 0 && tw[j] < j)) {
+      const k = [...new Set(S.items.map((j) => tw[j] >= 0 && tw[j] < j ? tw[j] : j))];
+      S.clear();
+      k.forEach((j) => S.pick("node", j, true));
+    }
     hit = mk("path", { fill: "none", stroke: "transparent", "stroke-width": 12, "vector-effect": "non-scaling-stroke", style: "pointer-events:stroke;cursor:" + (ctx.can("nodes.insert") ? "copy" : "move") });
     hit.addEventListener("dblclick", (e) => ctx.can("nodes.insert") && insert(ctx.toLocal(e)));
     hit.addEventListener("pointerdown", (e) => {
@@ -1782,7 +1805,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
       }
       if (s.t === "A") arcHandles(s, i);
     });
-    segs.forEach((s, i) => s.t !== "Z" && node(s, i));
+    segs.forEach((s, i) => s.t !== "Z" && !(tw[i] >= 0 && tw[i] < i) && node(s, i));
     pendUI();
     g.append(gh);
     layout();

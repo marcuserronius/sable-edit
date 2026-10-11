@@ -228,14 +228,28 @@ export function fixSmooth(segs){
   segs.forEach((s,i)=>{if(!s.sm)return;const e=smoothCtl(segs,i,info);if(e&&(s.t==='C'||s.t==='Q'))s.pts[0]=e;else delete s.sm});
   return segs;
 }
+/* Joined nodes: a subpath whose last point sits on its first has ONE node there, drawn twice (by its M and by its last segment). That is a path
+   closed with a Z that adds no line, and just as well one that was never closed (files in the wild leave the Z out). A Z that really draws a line
+   (the two points differ) is a segment of its own and the two nodes are separate. -> for each segment index, the index of the other half of
+   its joined node, else -1 */
+export function twins(segs,info=segInfo(segs)){
+  const tw=segs.map(()=>-1);
+  for(let m=0;m<segs.length;m++){
+    if(segs[m].t!=='M')continue;
+    let e=m;for(let k=m+1;k<segs.length&&segs[k].t!=='M'&&segs[k].t!=='Z';k++)e=k;
+    if(e>m&&near(info[e].to,info[m].to)){tw[m]=e;tw[e]=m}
+  }
+  return tw;
+}
+export const twinOf=(segs,j,info)=>twins(segs,info)[j]??-1;
 /* the two handles that meet at node j (a segment index, never a Z): {n, a (the one on the incoming side), b (outgoing), flag}, either may be
-   null (a line, an arc, the end of the path). A closed subpath whose last point sits on its start joins its last and first segments.
+   null (a line, an arc, the end of the path). A joined node (see twins) has the handles of its last and first segments.
    flag: the segment whose first control point is `b`, when that is j+1 (the one that can carry `sm`), else -1. */
 export function nodeHandles(segs,j,info=segInfo(segs)){
   const s=segs[j];if(!s||s.t==='Z')return null;
   let m=j;while(m>0&&segs[m].t!=='M')m--;
   let z=-1,e=-1;for(let k=m+1;k<segs.length&&segs[k].t!=='M';k++){if(segs[k].t==='Z'){z=k;break}e=k}
-  const wrap=z>=0&&e>m&&near(info[e].to,info[m].to);
+  const wrap=e>m&&near(info[e].to,info[m].to); // joined: see twins
   const endH=i=>{const q=segs[i];return q&&q.t==='C'?{i,k:1}:q&&q.t==='Q'?{i,k:0}:null};
   const startH=i=>{const q=segs[i];return q&&(q.t==='C'||q.t==='Q')?{i,k:0}:null};
   const a=s.t==='M'?(wrap?endH(e):null):endH(j);

@@ -58,8 +58,9 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
       adjacent L (and arcs) is part of the segment-conversion work below
     - Quadratic controls hang off two nodes: links apply at both, but only
       T-flagged chains cascade
-    - Dragging the start node of a closed path doesn't move the coincident end
-      node (pre-existing); it should, along with its handles
+    - DONE: a subpath whose last point sits on its first has one *joined* node there (a Z that draws no line, or no Z at all: files leave it out):
+      one square, selecting / dragging / deleting it takes both halves with their handles, and its handles pair up across the joint like any
+      node's. A Z that really draws a line stays a segment of its own and the nodes at its ends are independent (`twins` in `src/path-math.js`)
     - Node-type shapes (rounded = smooth, round = symmetric) are a first guess
   - DONE: H/V/L auto-conversion (a segment an edit touches is rewritten as
     H, V or L, whichever fits; the rest keep their command) and the Segment

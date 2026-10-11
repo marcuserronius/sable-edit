@@ -1,6 +1,6 @@
 /* The pen's path arithmetic (pure, no DOM; the path widget's pen mode drives it). Segments are those of path-math.js. A "head" is the
    segment index of the node the pen continues from: the last drawing segment of an open subpath (or its lone M). */
-import {arcThrough,convertSegment,healSmooth} from './path-math.js';
+import {arcThrough,convertSegment,healSmooth,twinOf} from './path-math.js';
 const cp=s=>({...s,pts:s.pts.map(p=>[...p]),...(s.arc?{arc:[...s.arc]}:{})});
 const refl=(h,n)=>[2*n[0]-h[0],2*n[1]-h[1]],mid=(a,b)=>[(a[0]+b[0])/2,(a[1]+b[1])/2],dist=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]),r3=n=>+n.toFixed(3);
 
@@ -15,7 +15,8 @@ export function subOf(segs,j){
 export function endKind(segs,j){
   const s=segs[j];if(!s||s.t==='Z')return null;
   const {m,last,closed}=subOf(segs,j);if(closed)return null;
-  return m===last?(j===m?'lone':null):j===last?'end':j===m?'start':null;
+  const k=m===last?(j===m?'lone':null):j===last?'end':j===m?'start':null;
+  return (k==='end'||k==='start')&&twinOf(segs,j)>=0?null:k; // its two ends are one joined node: a loop, nothing to continue from
 }
 /* the open subpath that starts at segment m, drawn backwards: {segs, map (old node index -> new)} or null for a closed one. Curves swap their
    controls, arcs flip their sweep, S / T flags move with the node they describe, lines are marked `dirty` so H / V / L is decided afresh. The
@@ -56,7 +57,7 @@ export function penNode(segs,head,p,o={}){
 }
 /* can the subpath whose end node is `head` be closed? It needs a segment to close (two nodes): a curve back to the start makes a perfectly good
    balloon of two nodes. (A straight two-node path closes to a line there and back, which is legal and merely flat.) */
-export function canClose(segs,head){const {m,last,closed}=subOf(segs,head);return !closed&&head===last&&last>m}
+export function canClose(segs,head){const {m,last,closed}=subOf(segs,head);return !closed&&head===last&&last>m&&twinOf(segs,head)<0} // (a path that already ends on its start is a loop already)
 /* close it: a final curve back to the start when the kind, a pending handle or a drag (o.drag, as for penNode) asks for one, then Z (a straight closing line is just the Z).
    -> {segs, idx (the start node: a closed subpath has no endpoints, so the pen has nothing to continue from)} or null */
 export function closeSub(segs,head,o={}){

@@ -1,6 +1,6 @@
 import {Widgets} from '../registry.js';
 import {mk} from '../dom.js';
-import {parsePath,serPath,arcGeom,arcFit,dc,split,segInfo,segD,nearestSeg,deleteNodes,deleteSegments,healSmooth,fixSmooth,nodeType,handleLinks,dragHandle,setNodeType,retype,convertSegments} from '../path-math.js';
+import {parsePath,serPath,arcGeom,arcFit,dc,split,segInfo,segD,nearestSeg,deleteNodes,deleteSegments,healSmooth,fixSmooth,twins,nodeType,handleLinks,dragHandle,setNodeType,retype,convertSegments} from '../path-math.js';
 import {pathNodes,pinnedIdx} from '../policy.js';
 import {selection} from '../selection.js';
 import {subOf,endKind,reverseSub,penNode,canClose,closeSub} from '../pen-math.js';
@@ -23,7 +23,7 @@ import {subOf,endKind,reverseSub,penNode,canClose,closeSub} from '../pen-math.js
    the segments an edit touches; the others keep the command they had. */
 Widgets.register(el=>el.tagName==='path',ctx=>{
   const el=ctx.el,g=mk('g'); ctx.overlay.append(g);
-  let segs=parsePath(el.getAttribute('d')||''),items=[],lines=[],hit,gh,sg,pv,dead=false,mv0=false,mv1=false,arcs=[],pinned=new Set(); // mv*: did the last two gestures drag? pinned: segment indices of pinned nodes
+  let segs=parsePath(el.getAttribute('d')||''),tw=[],items=[],lines=[],hit,gh,sg,pv,dead=false,mv0=false,mv1=false,arcs=[],pinned=new Set(); // mv*: did the last two gestures drag? pinned: segment indices of pinned nodes
   const S=selection(); // nodes are picked by segment index (never a Z), segments by the index of the segment that draws them (never an M)
   const f=v=>+v.toFixed(3), A=(e,o)=>{for(const k in o)e.setAttribute(k,o[k])};
   const ser=()=>serPath(segs);
@@ -41,7 +41,10 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
   const startOf=i=>{for(let j=i;j>=0;j--)if(segs[j].t==='M')return segs[j].pts[0]};
   const pnode=i=>{for(let j=i-1;j>=0;j--)if(segs[j].t!=='Z')return j;return -1}; // the node a segment starts from
   /* is segment i's handle drawn? w: 0 = the handle that hangs off its start node, 1 = off its end node, none = either */
-  const on=(i,w)=>S.has('seg',i)||(w!==1&&S.has('node',pnode(i)))||(w!==0&&S.has('node',i));
+  /* a joined node (path-math twins: the end of a path that is also its start) is one node: the M has the square, and selecting it is selecting both halves */
+  const nsel=j=>j>=0&&(S.has('node',j)||(tw[j]>=0&&S.has('node',tw[j])));
+  const on=(i,w)=>S.has('seg',i)||(w!==1&&nsel(pnode(i)))||(w!==0&&nsel(i));
+  const halves=js=>[...new Set(js.flatMap(j=>tw[j]>=0?[j,tw[j]]:[j]))]; // node indices -> both halves of every joined one
   function bind(h,onStart,onMove,onClick){ // onClick: a release that was not a drag
     h.addEventListener('pointerdown',e=>{
       e.stopPropagation();h.setPointerCapture(e.pointerId);const p0=ctx.toLocal(e);onStart(p0,e);mv0=mv1;mv1=false;
@@ -72,7 +75,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
         if(v&&!wasHead&&canClose(v.segs,v.head)&&subOf(v.segs,v.head).m===v.map(i)&&allowed()){closeGesture(e,v);return}
       }
       rel=S.press('node',i,e.shiftKey);layout();
-      refs=[];for(const j of S.items){
+      refs=[];for(const j of halves(S.items)){ // (both halves of a joined node move, each with its own handles)
         const q=segs[j];if(!q||q.t==='Z'||pinned.has(j))continue;const nx=segs[j+1];
         refs.push([q,q.pts.length-1]);if(q.t==='C')refs.push([q,1]);if(nx?.t==='C')refs.push([nx,0]);
         if(q.t==='L')q.dirty=1;if(nx?.t==='L')nx.dirty=1; // lines that change length: H / V / L is re-decided for them (see retype)
@@ -88,7 +91,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
      there; a closed one opens). Needs nodes.delete; cutting also needs a policy without pins, since it renumbers the nodes. */
   function del(){
     if(!S.size||!ctx.can('nodes.delete'))return false;
-    const r=S.kind==='seg'?(ctx.pin.length?null:deleteSegments(segs,S.items)):deleteNodes(segs,S.items,pinned);
+    const r=S.kind==='seg'?(ctx.pin.length?null:deleteSegments(segs,S.items)):deleteNodes(segs,halves(S.items),pinned);
     if(!r)return false;
     segs=r;S.clear();healSmooth(segs);write('del:'+(++uid));build();return true;
   }
@@ -133,6 +136,8 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
   function build(){
     g.replaceChildren();items=[];lines=[];arcs=[];const pn=pathNodes(segs);pinned=new Set(pinnedIdx(pn,ctx.pin).map(k=>pn.seg[k]));
     healSmooth(segs);S.keep('node',i=>segs[i]&&segs[i].t!=='Z');S.keep('seg',i=>segs[i]&&segs[i].t!=='M'); // an undo or an outside edit may have renumbered things
+    tw=twins(segs);
+    if(S.kind==='node'&&S.items.some(j=>tw[j]>=0&&tw[j]<j)){const k=[...new Set(S.items.map(j=>tw[j]>=0&&tw[j]<j?tw[j]:j))];S.clear();k.forEach(j=>S.pick('node',j,true))} // a joined node is selected by its first half
     hit=mk('path',{fill:'none',stroke:'transparent','stroke-width':12,'vector-effect':'non-scaling-stroke',style:'pointer-events:stroke;cursor:'+(ctx.can('nodes.insert')?'copy':'move')});
     hit.addEventListener('dblclick',e=>ctx.can('nodes.insert')&&insert(ctx.toLocal(e)));
     /* stroke press: drag moves the path; a click selects the segment under it (Shift adds / removes it). Clicking the one selected segment
@@ -152,7 +157,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
       if(s.t==='Q'){ln(()=>prevPt(i),()=>s.pts[0],{vis:()=>on(i)});ln(()=>s.pts[0],()=>s.pts[1],{vis:()=>on(i)});ctl(s,0,i)}
       if(s.t==='A')arcHandles(s,i);
     });
-    segs.forEach((s,i)=>s.t!=='Z'&&node(s,i));
+    segs.forEach((s,i)=>s.t!=='Z'&&!(tw[i]>=0&&tw[i]<i)&&node(s,i)); // one square for a joined node
     pendUI();g.append(gh);layout();
   }
   function layout(){
