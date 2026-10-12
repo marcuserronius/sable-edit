@@ -70,60 +70,57 @@ export function setNodeTypeAt(segs,j,type){
   const {a,b}=sd;let info=segInfo(out);const n=[...info[a].to];
   const conv=(i,t)=>{const c=convertSegment(out,i,t,segInfo(out));if(c&&c.length===1)out[i]=c[0]};
   if(a===b&&out[a].t==='Q')conv(a,'C');           // one segment from the node back to itself: its one control can't be smooth against itself
-  const farOf=side=>side==='b'?b:a-1;               // the node at the other end of the segment that gives way
-  const farSmooth=side=>{const f=farOf(side),t=f>=0&&nodeTypeAny(out,f);return !!t&&t!=='corner'};
-  const hOf=(side,q=out[side==='a'?a:b])=>side==='a'?(q.t==='C'?q.pts[1]:q.pts[0]):q.pts[0];     // the handle at the node
+  const A0=out[a].t,B0=out[b].t,ta0=tIn(out,a,info),tb0=tOut(out,b,info);   // the segments and tangents as they are now
+  const farPt=side=>side==='a'?info[a].from:info[b].to;                      // the node at the other end of the segment on `side`
+  const farSmooth=side=>{const f=side==='b'?b:a-1,t=f>=0&&nodeTypeAny(out,f);return !!t&&t!=='corner'};
+  const hOf=side=>{const q=out[side==='a'?a:b];return side==='a'?(q.t==='C'?q.pts[1]:q.pts[0]):q.pts[0]};     // the handle at the node
   const setH=(side,p)=>{const q=out[side==='a'?a:b];q.pts[side==='a'&&q.t==='C'?1:0]=p};
-  const ta=()=>tIn(out,a,info),tb=()=>tOut(out,b,info);
-  const place=(side,tf,len)=>side==='b'?along(n,tf,len):along(n,tf,-len);        // a handle on `side` along the forward tangent tf
-  /* both beziers: `side` is the one that gives way */
-  const bb=side=>{
-    const i=side==='a'?a:b,other=side==='a'?'b':'a';
-    if(a!==b&&out[i].t==='Q'&&farSmooth(side))conv(i,'C');
-    const ah=hOf(other),u=sub(ah,n),cur=dist(hOf(side),n),len=cur<0.005?Math.hypot(u[0],u[1]):cur;
-    if(sym)setH(side,refl(ah,n));else{const v=unit(u);if(!v)return false;setH(side,along(n,v,-len))}
-    return true;
-  };
-  /* a line becomes a bezier; `anchor`: the bezier it has to line up with ({h, kind}) or an arc's forward tangent ({tf}) */
-  const lineToBez=(side,anchor)=>{
-    const i=side==='a'?a:b,far=side==='a'?info[i].from:info[i].to,d=dist(n,far);if(d<1e-9)return false;
-    let kind=anchor.kind||'Q';if(kind==='Q'&&farSmooth(side))kind='C';
-    const tf=anchor.tf||(anchor.h&&(side==='b'?unit(sub(n,anchor.h)):unit(sub(anchor.h,n))));if(!tf)return false; // forward along the path, out of the anchor's handle
-    const h=sym&&anchor.h?refl(anchor.h,n):place(side,tf,kind==='Q'?d/2:d/3),c1=lerp(far,n,1/3);
-    out[i]=kind==='C'?(side==='b'?{t:'C',pts:[h,c1,far]}:{t:'C',pts:[c1,h,n]}):(side==='b'?{t:'Q',pts:[h,far]}:{t:'Q',pts:[h,n]});
-    out[i].dirty=1;return true;
-  };
-  let ok=true;const A=out[a].t,B=out[b].t;
-  if(isB(A)&&isB(B))ok=bb('b');
-  else if(A==='A'&&B==='A'){
+  const place=(side,tf,len)=>side==='b'?along(n,tf,len):along(n,tf,-len);    // a handle on `side` along the forward tangent tf
+  let unify=true,arcs=false;                                                   // arcs: both sides were arcs, now cubics whose handles are their own
+  /* The beziers and lines (and arcs that are made beziers) meet in one place: the handles go on the line through the node that is perpendicular to the
+     bisector of the angle the two segments make there, i.e. along the average of the two tangents, so neither side is the one that has to conform.
+     Each handle keeps its length if it has one; a handle that is missing (a line made a bezier, an arc made a bezier) or retracted into the node
+     gets half the distance to the node at the other end of its segment. Symmetric then gives both the same length: the average of the two, or the
+     one length there is when only one handle was there to begin with. */
+  if(A0==='A'&&B0==='A'){
     const ca=arcToCubic1(info[a].from,n,out[a].arc),cb=arcToCubic1(n,info[b].to,out[b].arc);
-    if(!ca||!cb)return null;out[a]={...ca,dirty:1};out[b]={...cb,dirty:1};ok=bb('b');
-  }else if(A==='L'&&B==='L'){
-    const P=info[a].from,N=info[b].to,t=unit(sub(N,P)),la=dist(P,n)/3,lb=dist(n,N)/3,l=sym?Math.min(la,lb):0;
-    if(!t||la<1e-9||lb<1e-9)return null;
-    out[a]={t:'C',pts:[lerp(P,n,1/3),along(n,t,-(sym?l:la)),[...n]],dirty:1};out[b]={t:'C',pts:[along(n,t,sym?l:lb),lerp(N,n,1/3),[...N]],dirty:1};
-  }else if(isB(A)||isB(B)){
-    const bs=isB(A)?'a':'b',os=bs==='a'?'b':'a',ot=os==='a'?A:B;
-    if(ot==='L')ok=lineToBez(os,{h:hOf(bs),kind:out[bs==='a'?a:b].t});
-    else if(!sym){ // bezier + arc, smooth: the handle swings onto the arc's tangent
-      const i=bs==='a'?a:b,tf=bs==='b'?ta():tb();if(!tf)return null;
-      if(a!==b&&out[i].t==='Q'&&farSmooth(bs))conv(i,'C');
-      const cur=dist(hOf(bs),n);setH(bs,place(bs,tf,cur<0.005?dist(info[i].from,info[i].to)/3:cur));
-    }else{ // bezier + arc, symmetric: the arc becomes a bezier of the bezier's kind, its handle the mirror of the other
-      const i=os==='a'?a:b,kind0=out[bs==='a'?a:b].t,kind=kind0==='Q'&&farSmooth(os)?'C':kind0,h=refl(hOf(bs),n),from=info[i].from,to=info[i].to;
-      if(kind==='C'){const c=arcToCubic1(from,to,out[i].arc);if(!c)return null;c.pts[os==='a'?1:0]=h;out[i]={...c,dirty:1}}
-      else out[i]={t:'Q',pts:os==='a'?[h,n]:[h,to],dirty:1};
-    }
-  }else{ // arc + line
-    const ls=A==='L'?'a':'b',as=ls==='a'?'b':'a',tf=as==='a'?ta():tb();if(!tf)return null;
-    if(!sym)ok=lineToBez(ls,{tf});
-    else{ // the circle tangent to the arc's direction at the node and through the line's far end
-      const far=ls==='a'?info[a].from:info[b].to,r=ls==='b'?arcTangentThrough(n,tf,far):arcTangentThrough(n,[-tf[0],-tf[1]],far);
+    if(!ca||!cb)return null;out[a]={...ca,dirty:1};out[b]={...cb,dirty:1};arcs=true;
+  }else if(A0==='A'||B0==='A'){
+    const as=A0==='A'?'a':'b',os=as==='a'?'b':'a',ot=os==='a'?A0:B0,tf=as==='a'?ta0:tb0,oi=os==='a'?a:b;   // the arc can't turn: its tangent is the one that stays
+    if(!tf)return null;
+    if(!sym&&ot==='L'){ // smooth: the line becomes a quadratic (a cubic where that keeps its far node smooth) leaving along the arc's tangent, half its length out
+      const far=farPt(os),d=dist(n,far);if(d<1e-9)return null;
+      const h=place(os,tf,d/2),c1=lerp(far,n,1/3);
+      out[oi]=farSmooth(os)?(os==='b'?{t:'C',pts:[h,c1,far]}:{t:'C',pts:[c1,h,n]}):(os==='b'?{t:'Q',pts:[h,far]}:{t:'Q',pts:[h,n]});
+      out[oi].dirty=1;unify=false;
+    }else if(!sym){ // smooth, beside a bezier: its handle swings onto the arc's tangent (a retracted one comes out half the distance to its other node)
+      if(a!==b&&out[oi].t==='Q'&&farSmooth(os))conv(oi,'C');
+      const cur=dist(hOf(os),n);setH(os,place(os,tf,cur<0.005?dist(n,farPt(os))/2:cur));unify=false;
+    }else if(ot==='L'){ // symmetric: the line becomes the circular arc that leaves the node along the arc's tangent and reaches the line's far end
+      const far=farPt(os),r=os==='b'?arcTangentThrough(n,tf,far):arcTangentThrough(n,[-tf[0],-tf[1]],far);
       if(!r)return null;
-      out[ls==='a'?a:b]={t:'A',arc:[r.R,r.R,0,r.large,ls==='b'?r.sweep:1-r.sweep],pts:[ls==='b'?far:[...n]],dirty:1};
+      out[oi]={t:'A',arc:[r.R,r.R,0,r.large,os==='b'?r.sweep:1-r.sweep],pts:[os==='b'?far:[...n]],dirty:1};unify=false;
+    }else{ // symmetric, beside a bezier: the arc becomes a bezier of the bezier's kind
+      const ai=as==='a'?a:b,from=info[ai].from,to=info[ai].to;
+      if(out[oi].t==='C'||farSmooth(as)){const c=arcToCubic1(from,to,out[ai].arc);if(!c)return null;out[ai]={...c,dirty:1}}
+      else out[ai]={t:'Q',pts:as==='a'?[lerp(from,to,.5),n]:[lerp(from,to,.5),to],dirty:1};   // (its one control is set below)
     }
   }
-  if(!ok)return null;
+  if(unify){
+    let t=ta0&&tb0?unit([ta0[0]+tb0[0],ta0[1]+tb0[1]]):(ta0||tb0);
+    if(!t){const u=ta0||tb0;t=u?[-u[1],u[0]]:null}     // opposite tangents (a cusp): the handles go along the normal
+    if(!t)return null;
+    for(const side of ['a','b']){ // lines become beziers (of the other side's kind, a cubic where a quadratic would turn the tangent of a smooth far node)
+      const i=side==='a'?a:b,q=out[i];
+      if(q.t==='L'){const o=out[side==='a'?b:a].t;let k=isB(o)?o:'C';if(k==='Q'&&farSmooth(side))k='C';conv(i,k)}
+      else if(q.t==='Q'&&a!==b&&farSmooth(side))conv(i,'C');
+    }
+    const real=side=>(arcs||isB(side==='a'?A0:B0))&&dist(hOf(side),n)>=0.005,ra=real('a'),rb=real('b');
+    let La=ra?dist(hOf('a'),n):dist(n,farPt('a'))/2,Lb=rb?dist(hOf('b'),n):dist(n,farPt('b'))/2;
+    if(sym){const L=ra===rb?(La+Lb)/2:(ra?La:Lb);La=Lb=L}
+    if(La<0.005||Lb<0.005)return null;                  // no neighbour to measure against: nothing to pull out
+    setH('a',along(n,t,-La));setH('b',along(n,t,Lb));
+  }
   if(sym&&b===a+1&&isB(out[a].t)&&out[a].t===out[b].t)out[b].sm=1;else if(b===a+1)delete out[b].sm;
   return {segs:healSmooth(out),ins};
 }

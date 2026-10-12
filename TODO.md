@@ -54,8 +54,11 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
     made by Shift-drag or the node menu are flagged and written as S/T; smooth
     pairs keep their angle; Alt-drag or Node type > Corner breaks the link.
     Open follow-ups:
-    - A node between a line and a curve has no type: tangent alignment with an
-      adjacent L (and arcs) is part of the segment-conversion work below
+    - DONE: nodes between any segment types have a type (tangent alignment decides it where a side has no handle) and Node type works on
+      them (`src/node-type.js`): the side that gives way is converted (see README); arcs only ever become one best-fit cubic, so no node is
+      ever added, apart from a closing line made explicit. Follow-ups: Symmetric between an arc and a line can't copy the arc's radii (the
+      circle through the node, the far end and the tangent is fixed), so it makes the unique tangent circular arc; handles lie on the average of the two tangents (arcs stay as they are), a missing / retracted one getting half its segment's length; a big arc turned into a
+      single cubic is only roughly the same shape; a pin on the node is not specially handled
     - Quadratic controls hang off two nodes: links apply at both, but only
       T-flagged chains cascade
     - DONE: a subpath whose last point sits on its first has one *joined* node there (a Z that draws no line, or no Z at all: files leave it out):

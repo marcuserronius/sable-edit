@@ -5,6 +5,9 @@ import { nodeTypeAny, setNodeTypeAt, setNodeTypes, arcToCubic1, arcTangentThroug
 
 const P = d => parsePath(d), S = s => serPath(s), set = (d, j, t) => { const r = setNodeTypeAt(P(d), j, t); return r && r.segs; };
 const T = (segs, j) => nodeTypeAny(segs, j);
+const un = v => { const l = Math.hypot(v[0], v[1]); return [v[0] / l, v[1] / l]; };
+const avg = (u, v) => un([u[0] + v[0], u[1] + v[1]]);                            // the handles lie along the average of the two tangents
+const at = (n, t, L) => [n[0] + t[0] * L, n[1] + t[1] * L];
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
 const nearPt = (p, q, eps = 1e-6) => { near(p[0], q[0], eps); near(p[1], q[1], eps); };
 
@@ -18,17 +21,17 @@ test('nodeTypeAny: any node with a segment on both sides has a type; tangents de
   assert.equal(T(P('M0 0 L40 0 L40 40 Z'), 0), 'corner');
 });
 
-test('1/4 bezier + line: the line becomes a bezier of the bezier\'s kind; smooth along its tangent, symmetric mirroring its handle', () => {
-  const C = 'M0 0 C0 10 20 20 30 20 L60 50';
-  let r = set(C, 1, 'smooth'); assert.equal(r[2].t, 'C'); nearPt(r[2].pts[0], [30 + 42.426 / 3, 20], 1e-3); assert.equal(T(r, 1), 'smooth');
-  r = set(C, 1, 'symmetric'); assert.equal(S(r), 'M0 0 C0 10 20 20 30 20 S50 40 60 50'); assert.equal(T(r, 1), 'symmetric');
+test('1/4 bezier + line: the line becomes a bezier of the bezier\'s kind; both handles on the averaged tangent, each keeping its length (the new one half its line), or equal for symmetric', () => {
+  const C = 'M0 0 C0 10 20 20 30 20 L60 50', n = [30, 20], t = avg([1, 0], un([30, 30])), half = Math.hypot(30, 30) / 2;
+  let r = set(C, 1, 'smooth'); assert.equal(r[2].t, 'C'); nearPt(r[1].pts[1], at(n, t, -10)); nearPt(r[2].pts[0], at(n, t, half)); assert.equal(T(r, 1), 'smooth');
+  r = set(C, 1, 'symmetric'); nearPt(r[1].pts[1], at(n, t, -10)); nearPt(r[2].pts[0], at(n, t, 10)); assert.equal(T(r, 1), 'symmetric'); assert.ok(r[2].sm);
   const Q = 'M0 0 Q20 20 30 20 L60 50';
-  r = set(Q, 1, 'smooth'); assert.equal(r[2].t, 'Q'); nearPt(r[2].pts[0], [30 + 42.426 / 2, 20], 1e-3); assert.equal(T(r, 1), 'smooth');
-  r = set(Q, 1, 'symmetric'); assert.equal(r[2].t, 'Q'); nearPt(r[2].pts[0], [40, 20]);
+  r = set(Q, 1, 'smooth'); assert.deepEqual([r[1].t, r[2].t], ['Q', 'Q']); nearPt(r[1].pts[0], at(n, t, -10)); nearPt(r[2].pts[0], at(n, t, half)); assert.equal(T(r, 1), 'smooth');
+  r = set(Q, 1, 'symmetric'); nearPt(r[2].pts[0], at(n, t, 10)); assert.equal(T(r, 1), 'symmetric');
   // line + bezier is the same with the order swapped
-  const L = 'M0 0 L30 0 C40 10 50 20 60 20';
-  r = set(L, 1, 'smooth'); assert.equal(r[1].t, 'C'); assert.equal(T(r, 1), 'smooth');
-  r = set(L, 1, 'symmetric'); assert.equal(T(r, 1), 'symmetric'); nearPt(r[1].pts[1], [20, -10]);
+  const L = 'M0 0 L30 0 C40 10 50 20 60 20', m = [30, 0], u = avg([1, 0], un([10, 10]));
+  r = set(L, 1, 'smooth'); assert.equal(r[1].t, 'C'); nearPt(r[1].pts[1], at(m, u, -15)); nearPt(r[2].pts[0], at(m, u, Math.hypot(10, 10))); assert.equal(T(r, 1), 'smooth');
+  r = set(L, 1, 'symmetric'); assert.equal(T(r, 1), 'symmetric'); nearPt(r[1].pts[1], at(m, u, -Math.hypot(10, 10)));
 });
 
 test('the quadratic rule: a quadratic would turn the tangent at its far end, so when that node is smooth the line becomes a cubic instead', () => {
@@ -55,30 +58,30 @@ test('2/5 arc + line: smooth makes a quadratic along the arc\'s tangent; symmetr
   assert.equal(set('M0 0 A20 20 0 0 1 20 20 L20 40', 1, 'symmetric'), null);   // the line already runs along the tangent: no circle fits
 });
 
-test('3 line + line: both become cubics along the line between the neighbours; symmetric uses one length for both handles', () => {
-  const D = 'M0 0 L30 0 L30 60', u = [1 / Math.sqrt(5), 2 / Math.sqrt(5)];          // the neighbours are 0,0 and 30,60: the handles run along (1,2)
+test('3 line + line: both become cubics along the average of the two directions; smooth gives each handle half its line, symmetric half the average', () => {
+  const D = 'M0 0 L30 0 L30 60', n = [30, 0], t = avg([1, 0], [0, 1]);             // the lines are 30 and 60 long
   let r = set(D, 1, 'smooth'); assert.deepEqual([r[1].t, r[2].t], ['C', 'C']); assert.equal(T(r, 1), 'smooth');
-  nearPt(r[1].pts[1], [30 - u[0] * 10, -u[1] * 10]); nearPt(r[2].pts[0], [30 + u[0] * 20, u[1] * 20]);   // a third of each line
+  nearPt(r[1].pts[1], at(n, t, -15)); nearPt(r[2].pts[0], at(n, t, 30));
   r = set(D, 1, 'symmetric'); assert.equal(T(r, 1), 'symmetric'); assert.ok(r[2].sm);
-  const h = r[1].pts[1], k = r[2].pts[0];
-  near(Math.hypot(h[0] - 30, h[1]), Math.hypot(k[0] - 30, k[1]));
+  nearPt(r[1].pts[1], at(n, t, -22.5)); nearPt(r[2].pts[0], at(n, t, 22.5));          // half the average of 30 and 60
 });
 
-test('6/7 arc + bezier: smooth swings the bezier\'s handle onto the arc\'s tangent; symmetric turns the arc into a single bezier and mirrors', () => {
-  const D = 'M0 0 A20 20 0 0 1 20 20 C30 30 40 40 50 40';
+test('6/7 arc + bezier: smooth swings the bezier\'s handle onto the arc\'s tangent; symmetric makes the arc a single bezier and both go along the averaged tangent', () => {
+  const D = 'M0 0 A20 20 0 0 1 20 20 C30 30 40 40 50 40', n = [20, 20];
   let r = set(D, 1, 'smooth'); assert.equal(r[1].t, 'A'); assert.equal(T(r, 1), 'smooth');
-  const len = Math.hypot(30 - 20, 30 - 20); near(Math.hypot(r[2].pts[0][0] - 20, r[2].pts[0][1] - 20), len, 1e-9);   // the handle keeps its length
+  near(Math.hypot(r[2].pts[0][0] - 20, r[2].pts[0][1] - 20), Math.hypot(10, 10), 1e-9);   // the handle keeps its length
+  const t = avg([0, 1], un([10, 10]));                                                    // the arc ends heading straight down
   r = set(D, 1, 'symmetric'); assert.equal(r.length, 3); assert.deepEqual([r[1].t, r[2].t], ['C', 'C']); assert.equal(T(r, 1), 'symmetric');
-  nearPt(r[1].pts[1], [10, 10]);                                               // the mirror of the bezier's handle at 30,30 about the node 20,20
+  nearPt(r[1].pts[1], at(n, t, -Math.hypot(10, 10))); nearPt(r[2].pts[0], at(n, t, Math.hypot(10, 10)));
   const E = 'M0 0 C10 -10 20 -10 30 0 A20 20 0 0 1 50 20';                       // bezier + arc
   r = set(E, 1, 'smooth'); assert.equal(r[2].t, 'A'); assert.equal(T(r, 1), 'smooth');
   r = set(E, 1, 'symmetric'); assert.equal(r.length, 3); assert.equal(r[2].t, 'C'); assert.equal(T(r, 1), 'symmetric');
   const Q = 'M0 0 A20 20 0 0 1 20 20 Q30 30 50 40';                              // arc + quadratic: the arc becomes a quadratic
-  r = set(Q, 1, 'symmetric'); assert.equal(r[1].t, 'Q'); assert.equal(r.length, 3); nearPt(r[1].pts[0], [10, 10]);
+  r = set(Q, 1, 'symmetric'); assert.equal(r[1].t, 'Q'); assert.equal(r.length, 3); nearPt(r[1].pts[0], at(n, t, -Math.hypot(10, 10)));
 });
 
 test('arc + arc: each becomes one best-fit cubic (no extra nodes), then as two beziers', () => {
-  const D = 'M0 0 A20 20 0 0 1 20 20 A30 30 0 0 0 40 40';
+  const D = 'M0 0 A20 20 0 0 1 20 20 A15 15 0 0 0 40 40';
   for (const t of ['smooth', 'symmetric']) { const r = set(D, 1, t); assert.equal(r.length, 3); assert.deepEqual([r[1].t, r[2].t], ['C', 'C']); assert.equal(T(r, 1), t); }
   const big = set('M0 0 A20 20 0 1 1 20 20 A20 20 0 0 0 40 40', 1, 'smooth'); assert.equal(big.length, 3); // a three quarter turn arc is still one segment
 });
@@ -137,4 +140,37 @@ test('sides: the segments on each side of a node, with joined nodes and closing 
   assert.deepEqual([sides(J, 0).a, sides(J, 0).b, sides(J, 2).a, sides(J, 2).b], [2, 1, 2, 1]);
   const Zl = P('M0 0 L40 0 L40 40 Z');
   assert.equal(sides(Zl, 2).b, 3); assert.equal(sides(Zl, 0).a, 3); assert.equal(sides(Zl, 0).b, 1);
+});
+
+/* a handle pulled right into its node (what clicking, not dragging, a new end leaves): the other handle is the anchor and the retracted one gives way */
+/* a handle pulled right into its node (what clicking, not dragging, a new end leaves) has nothing to follow: it gets half the distance to the node at the
+   other end of its segment (smooth); symmetric uses the length of the other handle if there is one, else half the average of the two distances */
+test('retracted handles: the node ends up with handles to drag, on the averaged tangent', () => {
+  const n = [30, 20];
+  const A = 'M0 0 C0 10 30 20 30 20 C40 20 50 30 60 30', tA = avg(un([30, 10]), [1, 0]);   // the incoming handle is retracted; the outgoing one is 10 long
+  assert.equal(T(P(A), 1), 'corner');
+  let r = set(A, 1, 'smooth'); nearPt(r[1].pts[1], at(n, tA, -Math.hypot(30, 20) / 2)); nearPt(r[2].pts[0], at(n, tA, 10)); assert.equal(T(r, 1), 'smooth');
+  r = set(A, 1, 'symmetric'); nearPt(r[1].pts[1], at(n, tA, -10)); nearPt(r[2].pts[0], at(n, tA, 10)); assert.equal(T(r, 1), 'symmetric'); assert.ok(r[2].sm);
+  const B = 'M0 0 C0 10 20 20 30 20 C30 20 50 30 60 30', tB = avg([1, 0], un([20, 10]));  // the outgoing handle is retracted
+  r = set(B, 1, 'smooth'); nearPt(r[1].pts[1], at(n, tB, -10)); nearPt(r[2].pts[0], at(n, tB, Math.hypot(30, 10) / 2)); assert.equal(T(r, 1), 'smooth');
+  r = set(B, 1, 'symmetric'); nearPt(r[2].pts[0], at(n, tB, 10)); assert.equal(T(r, 1), 'symmetric');
+  // both retracted: the node a click made in the middle of a path
+  const X = 'M0 0 C0 10 30 20 30 20 C30 20 50 30 60 30', tX = avg(un([30, 10]), un([20, 10])), da = Math.hypot(30, 20) / 2, db = Math.hypot(30, 10) / 2;
+  r = set(X, 1, 'smooth'); nearPt(r[1].pts[1], at(n, tX, -da)); nearPt(r[2].pts[0], at(n, tX, db)); assert.equal(T(r, 1), 'smooth');
+  r = set(X, 1, 'symmetric'); nearPt(r[1].pts[1], at(n, tX, -(da + db) / 2)); nearPt(r[2].pts[0], at(n, tX, (da + db) / 2)); assert.equal(T(r, 1), 'symmetric');
+});
+
+test('retracted handles on a quadratic, beside a line, and beside an arc', () => {
+  const n = [30, 20], t = avg(un([30, 20]), [1, 0]);
+  const Q = set('M0 0 Q30 20 30 20 Q40 20 60 30', 1, 'smooth'); assert.deepEqual([Q[1].t, Q[2].t], ['Q', 'Q']);
+  nearPt(Q[1].pts[0], at(n, t, -Math.hypot(30, 20) / 2)); nearPt(Q[2].pts[0], at(n, t, 10));
+  // a line beside a retracted bezier handle: nothing to follow, so both handles are half their segments' length
+  const L = 'M0 0 L30 0 C30 0 50 20 60 20', m = [30, 0], u = avg([1, 0], un([20, 20])), da = 15, db = Math.hypot(30, 20) / 2;
+  let r = set(L, 1, 'smooth'); assert.equal(r[1].t, 'C'); nearPt(r[1].pts[1], at(m, u, -da)); nearPt(r[2].pts[0], at(m, u, db)); assert.equal(T(r, 1), 'smooth');
+  r = set(L, 1, 'symmetric'); nearPt(r[2].pts[0], at(m, u, (da + db) / 2)); assert.equal(T(r, 1), 'symmetric');
+  // an arc, then a bezier with its handle retracted: symmetric turns the arc into a cubic, and both get handles
+  r = set('M0 0 A20 20 0 0 1 20 20 C20 20 30 40 50 40', 1, 'symmetric');
+  assert.equal(r[1].t, 'C'); assert.equal(r.length, 3); assert.ok(Math.hypot(r[2].pts[0][0] - 20, r[2].pts[0][1] - 20) > 1); assert.equal(T(r, 1), 'symmetric');
+  // a node placed in the middle of a straight run by clicking: it is smooth already (nothing to be done to the tangent) but gets handles
+  r = set('M0 0 L30 0 L60 0', 1, 'smooth'); assert.deepEqual([r[1].t, r[2].t], ['C', 'C']); nearPt(r[1].pts[1], [15, 0]); nearPt(r[2].pts[0], [45, 0]);
 });

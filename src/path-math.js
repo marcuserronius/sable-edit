@@ -321,8 +321,19 @@ export function retype(segs){
   return segs;
 }
 const lerp2=(a,b,t)=>[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t],unit=v=>{const d=Math.hypot(v[0],v[1]);return d>1e-9?[v[0]/d,v[1]/d]:null};
+/* unit direction the path is heading in as segment i starts, or null */
+export function startTangent(segs,i,info){
+  const q=segs[i];if(!q||q.t==='M')return null;
+  const {from,to}=info[i];
+  if(q.t==='Z'||q.t==='L')return unit(vec(to,from));
+  if(q.t==='C')return unit(vec(q.pts[0],from))||unit(vec(q.pts[1],from))||unit(vec(to,from));
+  if(q.t==='Q')return unit(vec(q.pts[0],from))||unit(vec(to,from));
+  const g=arcGeom(from,to,...q.arc);if(!g)return unit(vec(to,from));
+  const sg=Math.sign(g.dth)||1,sn=Math.sin(g.th1),cs=Math.cos(g.th1);
+  return unit([sg*(-g.rx*sn*g.c-g.ry*cs*g.s),sg*(-g.rx*sn*g.s+g.ry*cs*g.c)]);
+}
 /* unit direction the path is heading in as segment i ends, or null */
-function endTangent(segs,i,info){
+export function endTangent(segs,i,info){
   const q=segs[i];if(!q||q.t==='M'||q.t==='Z')return null;
   const {from,to}=info[i];
   if(q.t==='C')return unit(vec(q.pts[2],q.pts[1]))||unit(vec(q.pts[2],q.pts[0]))||unit(vec(to,from));

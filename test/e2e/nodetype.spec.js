@@ -83,3 +83,26 @@ test('a node with one cubic on both sides smooths against itself', async ({ page
   expect(n.slice(0, 2)).toEqual([60, 100]);
   expect(n.slice(2, 4).map((v, i) => Math.round(v + n[4 + i] - 2 * [60, 100][i]))).toEqual([0, 0]);   // the two handles are mirror images about the node
 });
+
+test('a handle pulled into its node (a curve whose end was only clicked): both handles go on the averaged tangent; Smooth gives the missing one half its segment, Symmetric the other one\'s length', async ({ page }) => {
+  const d0 = 'M20 100 C20 60 100 100 100 100 C130 80 160 80 180 100';          // the first curve's second handle sits on the node at 100,100
+  const pt = await setup(page, d0);
+  const un = v => { const l = Math.hypot(v[0], v[1]); return [v[0] / l, v[1] / l]; };
+  const t = un([un([80, 40])[0] + un([30, -20])[0], un([80, 40])[1] + un([30, -20])[1]]);   // the average of the curves' two tangents at the node
+  const c2 = L => [100 - t[0] * L, 100 - t[1] * L];
+  const got = async () => (await D(page)).match(/-?[\d.]+/g).map(Number).slice(4, 6);
+  await nodeType(page, await pt(100, 100), 'Smooth');
+  for (const [g, w] of (await got()).map((g, i) => [g, c2(40)[i]])) expect(g).toBeCloseTo(w, 1);   // half the 80 long first curve
+  await page.keyboard.press('Control+z');
+  expect(await D(page)).toBe(d0);
+  await nodeType(page, await pt(100, 100), 'Symmetric');
+  for (const [g, w] of (await got()).map((g, i) => [g, c2(Math.hypot(30, 20))[i]])) expect(g).toBeCloseTo(w, 1);   // as long as the other handle
+});
+
+test('a node placed in the middle of a path by clicking (both handles retracted) gets handles to drag when it is made smooth', async ({ page }) => {
+  const pt = await setup(page, 'M20 100 C20 100 100 100 100 100 C100 100 180 100 180 100');
+  await nodeType(page, await pt(100, 100), 'Symmetric');
+  const n = (await D(page)).match(/-?[\d.]+/g).map(Number);
+  expect(n[4]).toBeCloseTo(60, 1); expect(n[5]).toBeCloseTo(100, 1);               // 40 back along the straight run (half the average of the two 80 long segments)
+  expect(await page.evaluate(() => ed.selection)).toEqual({ kind: 'node', items: [1] });
+});

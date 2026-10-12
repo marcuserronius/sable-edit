@@ -18,7 +18,7 @@
             policy (get/set: swap the whole policy at runtime),
             canUndo/canRedo, mode (get/set), modes (what the selected shape offers), cycleMode(),
             selection (path / polygon / polyline edit mode: {kind:'node'|'segment', items:[indices]} or null), deleteSelection(), clearSelection()
-            (a path whose last point is on its first, Z or not, has one joined node there: one square, both halves move / delete together, handles pair across it; a Z that draws a line leaves two independent nodes. Path edit mode also has node types: corner / smooth / symmetric; Shift-drag a handle = symmetric, Alt-drag = break the link; an editor can add
+            (a path whose last point is on its first, Z or not, has one joined node there: one square, both halves move / delete together, handles pair across it; a Z that draws a line leaves two independent nodes. Path edit mode also has node types: corner / smooth / symmetric, on any node with a segment on each side (src/node-type.js: handles go on the average of the two tangents at the node, each keeping its length or, if missing / retracted, getting half the distance to its far node; symmetric: both the same length. Lines become beziers of the other side's kind; arc + line -> quadratic (smooth) or tangent circular arc (symmetric), the arc's tangent staying; arc + bezier -> the handle follows the arc, or the arc becomes one bezier; arc + arc -> single cubics; a quadratic that would unsmooth its far node becomes a cubic; a real closing line is made explicit first); Shift-drag a handle = symmetric, Alt-drag = break the link; an editor can add
             right-click menu items through ctx.menu(f))
             edit mode: double-click / long-press a shape, or ed.edit(); Esc = back to scale, then deselect; ed.mode='edit' still works
             path segments: right-click > Segment type (L / Q / C / A); lines the editor touches are written H / V / L, shortest first
@@ -267,15 +267,15 @@ function arcFit(P, E, arc, kind, p, opts = {}) {
   const g0 = arcGeom(P, E, rx, ry, phi, fa, fs);
   if (!g0) return arc;
   if (kind === "flip") {
-    const dist2 = (q) => {
+    const dist3 = (q) => {
       const m = q.pt(q.th1 + q.dth / 2);
       return Math.hypot(m[0] - p[0], m[1] - p[1]);
     };
-    let best = [fa, fs], bd = dist2(g0);
+    let best = [fa, fs], bd = dist3(g0);
     for (const a of [0, 1]) for (const s of [0, 1]) {
       const q = arcGeom(P, E, rx, ry, phi, a, s);
-      if (q && dist2(q) < bd - 1e-6) {
-        bd = dist2(q);
+      if (q && dist3(q) < bd - 1e-6) {
+        bd = dist3(q);
         best = [a, s];
       }
     }
@@ -608,6 +608,18 @@ var unit = (v) => {
   const d = Math.hypot(v[0], v[1]);
   return d > 1e-9 ? [v[0] / d, v[1] / d] : null;
 };
+function startTangent(segs, i, info) {
+  const q = segs[i];
+  if (!q || q.t === "M") return null;
+  const { from, to } = info[i];
+  if (q.t === "Z" || q.t === "L") return unit(vec(to, from));
+  if (q.t === "C") return unit(vec(q.pts[0], from)) || unit(vec(q.pts[1], from)) || unit(vec(to, from));
+  if (q.t === "Q") return unit(vec(q.pts[0], from)) || unit(vec(to, from));
+  const g = arcGeom(from, to, ...q.arc);
+  if (!g) return unit(vec(to, from));
+  const sg = Math.sign(g.dth) || 1, sn = Math.sin(g.th1), cs = Math.cos(g.th1);
+  return unit([sg * (-g.rx * sn * g.c - g.ry * cs * g.s), sg * (-g.rx * sn * g.s + g.ry * cs * g.c)]);
+}
 function endTangent(segs, i, info) {
   const q = segs[i];
   if (!q || q.t === "M" || q.t === "Z") return null;
@@ -1511,6 +1523,183 @@ function headAfter(old, now, closed) {
   return now.length < old.length ? closed || k > 0 ? Math.max(0, k - 1) : 0 : k;
 }
 
+// src/node-type.js
+var cl = (s) => ({ ...s, pts: s.pts.map((p) => [...p]), ...s.arc ? { arc: [...s.arc] } : {} });
+var sub = (a, b) => [a[0] - b[0], a[1] - b[1]];
+var dist2 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+var unit2 = (v) => {
+  const d = Math.hypot(v[0], v[1]);
+  return d > 1e-9 ? [v[0] / d, v[1] / d] : null;
+};
+var lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+var along = (n, t, l) => [n[0] + t[0] * l, n[1] + t[1] * l];
+var isB = (t) => t === "C" || t === "Q";
+function sides(segs, j, tw = twins(segs)) {
+  const s = segs[j];
+  if (!s || s.t === "Z") return null;
+  let m = j;
+  while (m > 0 && segs[m].t !== "M") m--;
+  let e = m, z = -1;
+  for (let k = m + 1; k < segs.length && segs[k].t !== "M"; k++) {
+    if (segs[k].t === "Z") {
+      z = k;
+      break;
+    }
+    e = k;
+  }
+  const joined = e > m && tw[m] === e;
+  let a, b;
+  if (j === m) {
+    a = joined ? e : z >= 0 ? z : -1;
+    b = e > m ? m + 1 : -1;
+  } else {
+    a = j;
+    b = j < e ? j + 1 : joined ? m + 1 : z >= 0 ? z : -1;
+  }
+  return { a, b, m, z };
+}
+var dirOK = (u, v) => Math.abs(u[0] * v[1] - u[1] * v[0]) <= 5e-3 && u[0] * v[0] + u[1] * v[1] > 0;
+var tIn = (segs, i, info) => segs[i].t === "Z" ? unit2(sub(info[i].to, info[i].from)) : endTangent(segs, i, info);
+var tOut = (segs, i, info) => segs[i].t === "Z" ? unit2(sub(info[i].to, info[i].from)) : startTangent(segs, i, info);
+function nodeTypeAny(segs, j, info = segInfo(segs), tw = twins(segs, info)) {
+  const sd = sides(segs, j, tw);
+  if (!sd || sd.a < 0 || sd.b < 0) return null;
+  if (isB(segs[sd.a].t) && isB(segs[sd.b].t)) return nodeType(segs, j, info) || "corner";
+  const u = tIn(segs, sd.a, info), v = tOut(segs, sd.b, info);
+  return u && v && dirOK(u, v) ? "smooth" : "corner";
+}
+function arcToCubic1(from, to, arc) {
+  const g = arcGeom(from, to, ...arc);
+  if (!g) return null;
+  const d = (th) => [-g.rx * Math.sin(th) * g.c - g.ry * Math.cos(th) * g.s, -g.rx * Math.sin(th) * g.s + g.ry * Math.cos(th) * g.c];
+  const k = 4 / 3 * Math.tan(Math.max(-1.5 * Math.PI, Math.min(1.5 * Math.PI, g.dth)) / 4), d1 = d(g.th1), d2 = d(g.th1 + g.dth);
+  return { t: "C", pts: [[from[0] + k * d1[0], from[1] + k * d1[1]], [to[0] - k * d2[0], to[1] - k * d2[1]], [...to]] };
+}
+function arcTangentThrough(p0, t0, p1) {
+  const d = sub(p1, p0), nr = [-t0[1], t0[0]], k = nr[0] * d[0] + nr[1] * d[1];
+  if (Math.abs(k) < 1e-6 * (Math.hypot(d[0], d[1]) || 1)) return null;
+  const s = (d[0] * d[0] + d[1] * d[1]) / (2 * k), c = [p0[0] + nr[0] * s, p0[1] + nr[1] * s], r0 = sub(p0, c), r1 = sub(p1, c);
+  const sweep = r0[0] * t0[1] - r0[1] * t0[0] > 0 ? 1 : 0, TAU = 2 * Math.PI;
+  let dl = sweep ? Math.atan2(r1[1], r1[0]) - Math.atan2(r0[1], r0[0]) : Math.atan2(r0[1], r0[0]) - Math.atan2(r1[1], r1[0]);
+  dl = (dl % TAU + TAU) % TAU;
+  return { R: Math.abs(s), sweep, large: dl > Math.PI ? 1 : 0 };
+}
+function setNodeTypeAt(segs, j, type) {
+  if (type === "corner") {
+    const r = setNodeType(segs, j, "corner");
+    return r ? { segs: r, ins: -1 } : null;
+  }
+  if (type !== "smooth" && type !== "symmetric") return null;
+  const sym = type === "symmetric", out = segs.map(cl);
+  let ins = -1, sd = sides(out, j);
+  if (!sd) return null;
+  if (sd.a >= 0 && out[sd.a].t === "Z" || sd.b >= 0 && out[sd.b].t === "Z") {
+    out.splice(sd.z, 0, { t: "L", pts: [[...out[sd.m].pts[0]]], dirty: 1 });
+    ins = sd.z;
+    sd = sides(out, j);
+  }
+  if (!sd || sd.a < 0 || sd.b < 0) return null;
+  const { a, b } = sd;
+  let info = segInfo(out);
+  const n = [...info[a].to];
+  const conv = (i, t) => {
+    const c = convertSegment(out, i, t, segInfo(out));
+    if (c && c.length === 1) out[i] = c[0];
+  };
+  if (a === b && out[a].t === "Q") conv(a, "C");
+  const A0 = out[a].t, B0 = out[b].t, ta0 = tIn(out, a, info), tb0 = tOut(out, b, info);
+  const farPt = (side) => side === "a" ? info[a].from : info[b].to;
+  const farSmooth = (side) => {
+    const f2 = side === "b" ? b : a - 1, t = f2 >= 0 && nodeTypeAny(out, f2);
+    return !!t && t !== "corner";
+  };
+  const hOf = (side) => {
+    const q = out[side === "a" ? a : b];
+    return side === "a" ? q.t === "C" ? q.pts[1] : q.pts[0] : q.pts[0];
+  };
+  const setH = (side, p) => {
+    const q = out[side === "a" ? a : b];
+    q.pts[side === "a" && q.t === "C" ? 1 : 0] = p;
+  };
+  const place = (side, tf, len) => side === "b" ? along(n, tf, len) : along(n, tf, -len);
+  let unify = true, arcs = false;
+  if (A0 === "A" && B0 === "A") {
+    const ca = arcToCubic1(info[a].from, n, out[a].arc), cb = arcToCubic1(n, info[b].to, out[b].arc);
+    if (!ca || !cb) return null;
+    out[a] = { ...ca, dirty: 1 };
+    out[b] = { ...cb, dirty: 1 };
+    arcs = true;
+  } else if (A0 === "A" || B0 === "A") {
+    const as = A0 === "A" ? "a" : "b", os = as === "a" ? "b" : "a", ot = os === "a" ? A0 : B0, tf = as === "a" ? ta0 : tb0, oi = os === "a" ? a : b;
+    if (!tf) return null;
+    if (!sym && ot === "L") {
+      const far = farPt(os), d = dist2(n, far);
+      if (d < 1e-9) return null;
+      const h = place(os, tf, d / 2), c1 = lerp3(far, n, 1 / 3);
+      out[oi] = farSmooth(os) ? os === "b" ? { t: "C", pts: [h, c1, far] } : { t: "C", pts: [c1, h, n] } : os === "b" ? { t: "Q", pts: [h, far] } : { t: "Q", pts: [h, n] };
+      out[oi].dirty = 1;
+      unify = false;
+    } else if (!sym) {
+      if (a !== b && out[oi].t === "Q" && farSmooth(os)) conv(oi, "C");
+      const cur = dist2(hOf(os), n);
+      setH(os, place(os, tf, cur < 5e-3 ? dist2(n, farPt(os)) / 2 : cur));
+      unify = false;
+    } else if (ot === "L") {
+      const far = farPt(os), r = os === "b" ? arcTangentThrough(n, tf, far) : arcTangentThrough(n, [-tf[0], -tf[1]], far);
+      if (!r) return null;
+      out[oi] = { t: "A", arc: [r.R, r.R, 0, r.large, os === "b" ? r.sweep : 1 - r.sweep], pts: [os === "b" ? far : [...n]], dirty: 1 };
+      unify = false;
+    } else {
+      const ai = as === "a" ? a : b, from = info[ai].from, to = info[ai].to;
+      if (out[oi].t === "C" || farSmooth(as)) {
+        const c = arcToCubic1(from, to, out[ai].arc);
+        if (!c) return null;
+        out[ai] = { ...c, dirty: 1 };
+      } else out[ai] = { t: "Q", pts: as === "a" ? [lerp3(from, to, 0.5), n] : [lerp3(from, to, 0.5), to], dirty: 1 };
+    }
+  }
+  if (unify) {
+    let t = ta0 && tb0 ? unit2([ta0[0] + tb0[0], ta0[1] + tb0[1]]) : ta0 || tb0;
+    if (!t) {
+      const u = ta0 || tb0;
+      t = u ? [-u[1], u[0]] : null;
+    }
+    if (!t) return null;
+    for (const side of ["a", "b"]) {
+      const i = side === "a" ? a : b, q = out[i];
+      if (q.t === "L") {
+        const o = out[side === "a" ? b : a].t;
+        let k = isB(o) ? o : "C";
+        if (k === "Q" && farSmooth(side)) k = "C";
+        conv(i, k);
+      } else if (q.t === "Q" && a !== b && farSmooth(side)) conv(i, "C");
+    }
+    const real = (side) => (arcs || isB(side === "a" ? A0 : B0)) && dist2(hOf(side), n) >= 5e-3, ra = real("a"), rb = real("b");
+    let La = ra ? dist2(hOf("a"), n) : dist2(n, farPt("a")) / 2, Lb = rb ? dist2(hOf("b"), n) : dist2(n, farPt("b")) / 2;
+    if (sym) {
+      const L = ra === rb ? (La + Lb) / 2 : ra ? La : Lb;
+      La = Lb = L;
+    }
+    if (La < 5e-3 || Lb < 5e-3) return null;
+    setH("a", along(n, t, -La));
+    setH("b", along(n, t, Lb));
+  }
+  if (sym && b === a + 1 && isB(out[a].t) && out[a].t === out[b].t) out[b].sm = 1;
+  else if (b === a + 1) delete out[b].sm;
+  return { segs: healSmooth(out), ins };
+}
+function setNodeTypes(segs, js, type) {
+  let out = segs, sel = [...js], did = false;
+  for (const j of [...js].sort((x, y) => y - x)) {
+    const r = setNodeTypeAt(out, sel[js.indexOf(j)], type);
+    if (!r) continue;
+    did = true;
+    out = r.segs;
+    if (r.ins >= 0) sel = sel.map((q) => q >= r.ins ? q + 1 : q);
+  }
+  return did ? { segs: out, sel } : null;
+}
+
 // src/widgets/path.js
 Widgets.register((el) => el.tagName === "path", (ctx) => {
   const el = ctx.el, g = mk("g");
@@ -1814,7 +2003,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     const M = ctx.matrix(), T = (p) => {
       const q = new DOMPoint(p[0], p[1]).matrixTransform(M);
       return [q.x, q.y];
-    }, info = segInfo(segs), types = segs.map((_, j) => nodeType(segs, j, info)), w = ctx.px(1.5);
+    }, info = segInfo(segs), types = segs.map((_, j) => nodeTypeAny(segs, j, info, tw)), w = ctx.px(1.5);
     A2(hit, { d: ser(), transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
     lines.forEach((l) => {
       const a0 = l.a(), b0 = l.b(), show = a0 && b0 && (!l.vis || l.vis());
@@ -2038,13 +2227,11 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     }
   };
   function setType(js, type) {
-    let out = segs;
-    for (const j of js) {
-      const r = setNodeType(out, j, type);
-      if (r) out = r;
-    }
-    if (out === segs) return;
-    segs = out;
+    const r = setNodeTypes(segs, js, type);
+    if (!r) return;
+    segs = r.segs;
+    S.clear();
+    r.sel.forEach((j) => S.pick("node", j, true));
     write("type:" + ++uid);
     build();
   }
@@ -2086,9 +2273,12 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
       };
       return [{ label: "Segment type", submenu: [it2("Line", "L"), it2("Quadratic curve", "Q"), it2("Cubic curve", "C"), it2("Arc", "A")] }];
     }
-    const info = segInfo(segs), js = (S.kind === "node" ? S.items : []).filter((j) => nodeType(segs, j, info)), ts = new Set(js.map((j) => nodeType(segs, j, info)));
+    const info = segInfo(segs), js = (S.kind === "node" ? S.items : []).filter((j) => nodeTypeAny(segs, j, info, tw)), ts = new Set(js.map((j) => nodeTypeAny(segs, j, info, tw)));
     if (!js.length) return [];
-    const it = (label, t) => ({ label, checked: ts.size === 1 && ts.has(t), action: () => setType(js, t) });
+    const it = (label, t) => {
+      const r = t !== "corner" && setNodeTypes(segs, js, t);
+      return { label, checked: ts.size === 1 && ts.has(t), disabled: !!r && r.segs.length > segs.length && !ctx.can("nodes.insert"), action: () => setType(js, t) };
+    };
     return [{ label: "Node type", submenu: [it("Corner", "corner"), it("Smooth", "smooth"), it("Symmetric", "symmetric")] }];
   });
   ctx.on("view", () => !dead && layout());

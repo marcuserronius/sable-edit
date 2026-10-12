@@ -1,9 +1,10 @@
 import {Widgets} from '../registry.js';
 import {mk} from '../dom.js';
-import {parsePath,serPath,arcGeom,arcFit,dc,split,segInfo,segD,nearestSeg,deleteNodes,deleteSegments,healSmooth,fixSmooth,twins,nodeType,handleLinks,dragHandle,setNodeType,retype,convertSegments} from '../path-math.js';
+import {parsePath,serPath,arcGeom,arcFit,dc,split,segInfo,segD,nearestSeg,deleteNodes,deleteSegments,healSmooth,fixSmooth,twins,handleLinks,dragHandle,retype,convertSegments} from '../path-math.js';
 import {pathNodes,pinnedIdx} from '../policy.js';
 import {selection} from '../selection.js';
 import {subOf,endKind,reverseSub,penNode,canClose,closeSub} from '../pen-math.js';
+import {nodeTypeAny,setNodeTypes} from '../node-type.js';
 /* Path widget: nodes (squares) + bezier handles (dots). Drag to edit; Shift while dragging a
    cubic handle mirrors its partner; double-click the path to add a node, a node to delete it. The policy can take those two
    away (nodes.insert / nodes.delete) and pin nodes: a pinned node is drawn grey and can't be dragged or deleted (its bezier
@@ -161,7 +162,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     pendUI();g.append(gh);layout();
   }
   function layout(){
-    const M=ctx.matrix(),T=p=>{const q=new DOMPoint(p[0],p[1]).matrixTransform(M);return [q.x,q.y]},info=segInfo(segs),types=segs.map((_,j)=>nodeType(segs,j,info)),w=ctx.px(1.5);
+    const M=ctx.matrix(),T=p=>{const q=new DOMPoint(p[0],p[1]).matrixTransform(M);return [q.x,q.y]},info=segInfo(segs),types=segs.map((_,j)=>nodeTypeAny(segs,j,info,tw)),w=ctx.px(1.5);
     A(hit,{d:ser(),transform:`matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})`});
     lines.forEach(l=>{const a0=l.a(),b0=l.b(),show=a0&&b0&&(!l.vis||l.vis());l.el.style.display=show?'':'none';if(!show)return;
       const a=T(a0),b=T(b0);A(l.el,{x1:a[0],y1:a[1],x2:b[0],y2:b[1],'stroke-width':ctx.px(1),'stroke-dasharray':l.dash?ctx.px(2)+' '+ctx.px(3):'none'})});
@@ -268,8 +269,8 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
   };
   /* right-click menu: Node type for the selected nodes. A right-click on a node selects it first (unless it is already selected). */
   function setType(js,type){
-    let out=segs;for(const j of js){const r=setNodeType(out,j,type);if(r)out=r}
-    if(out===segs)return;segs=out;write('type:'+(++uid));build();
+    const r=setNodeTypes(segs,js,type);if(!r)return;
+    segs=r.segs;S.clear();r.sel.forEach(j=>S.pick('node',j,true));write('type:'+(++uid));build();
   }
   /* Segment type for the selected segments: Line / Quadratic / Cubic / Arc (see convertSegment for how the shape carries over). The converted
      segments stay selected, so a line turned into a curve can be dragged by its handles straight away. */
@@ -293,9 +294,9 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
       const it=(label,t)=>{const r=convertSegments(segs,js,t);return {label,checked:cur.size===1&&cur.has(t),disabled:!!r&&r.segs.length>segs.length&&!ctx.can('nodes.insert'),action:()=>setSegType(js,t)}};
       return [{label:'Segment type',submenu:[it('Line','L'),it('Quadratic curve','Q'),it('Cubic curve','C'),it('Arc','A')]}];
     }
-    const info=segInfo(segs),js=(S.kind==='node'?S.items:[]).filter(j=>nodeType(segs,j,info)),ts=new Set(js.map(j=>nodeType(segs,j,info)));
+    const info=segInfo(segs),js=(S.kind==='node'?S.items:[]).filter(j=>nodeTypeAny(segs,j,info,tw)),ts=new Set(js.map(j=>nodeTypeAny(segs,j,info,tw)));
     if(!js.length)return [];
-    const it=(label,t)=>({label,checked:ts.size===1&&ts.has(t),action:()=>setType(js,t)});
+    const it=(label,t)=>{const r=t!=='corner'&&setNodeTypes(segs,js,t);return {label,checked:ts.size===1&&ts.has(t),disabled:!!r&&r.segs.length>segs.length&&!ctx.can('nodes.insert'),action:()=>setType(js,t)}}; // (a closing line made explicit is one more segment)
     return [{label:'Node type',submenu:[it('Corner','corner'),it('Smooth','smooth'),it('Symmetric','symmetric')]}];
   });
   ctx.on('view',()=>!dead&&layout());
