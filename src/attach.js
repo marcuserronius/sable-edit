@@ -6,13 +6,14 @@ import {haloWidget} from './widgets/halo.js';
 import {bodyGrab} from './body.js';
 import {Tools} from './tools.js';
 import {openMenu as openMenuUI} from './menu.js';
-import {compilePolicy,checkWrites,canSet,modeOk,OPEN} from './policy.js';
+import {compilePolicy,checkWrites,canSet,modeOk,OPEN,checkConvert,GEO} from './policy.js';
+import {convertShape,KINDS,LABELS} from './convert.js';
 const MODES=['scale','rotate','edit'];
 export function attach(svg,opts={}){
   const PRIM=opts.selector||'path,rect,circle,ellipse,line,polyline,polygon,text', root=opts.root||svg;
   let ov=opts.overlay; if(!ov){ov=mk('g',{style:'pointer-events:none'});svg.append(ov)}
   const hs={}, on=(e,f)=>{(hs[e]??=[]).push(f)}, emit=(e,d)=>[...(hs[e]||[])].forEach(f=>f(d));
-  if(opts.onSelect)on('select',opts.onSelect);if(opts.onCreate)on('create',d=>opts.onCreate(d.el)); if(opts.onChange)on('change',d=>opts.onChange(d.el,d.attr,d.src));
+  if(opts.onSelect)on('select',opts.onSelect);if(opts.onCreate)on('create',d=>opts.onCreate(d.el));if(opts.onConvert)on('convert',d=>opts.onConvert(d.el,d.from)); if(opts.onChange)on('change',d=>opts.onChange(d.el,d.attr,d.src));
   if(opts.onDenied)on('denied',d=>opts.onDenied(d.el,d));
   let P=compilePolicy(opts.policy,{root}),lastDeny=''; // permissions: see src/policy.js. No policy = everything allowed, nothing checked
   if(P)P.validate(root); // data-sable-policy typos throw here, not later
@@ -75,10 +76,26 @@ export function attach(svg,opts={}){
     if(dir>0){i.parent.insertBefore(i.el,i.next&&i.next.parentNode===i.parent?i.next:null);emit('create',{el:i.el,src:'history'})}
     else{if(sel===i.el)select(null);i.el.remove();emit('remove',{el:i.el,src:'history'})}
   };
+  /* a conversion is one history item {swap,from,to}: the old element and the one that replaced it. Undo puts `from` back in `to`'s place, redo the reverse. */
+  const stepSwap=(i,dir)=>{
+    const gone=dir>0?i.from:i.to,back=dir>0?i.to:i.from;
+    if(!gone.parentNode)return;
+    const keep=sel===gone,edit=keep&&cur()==='edit',pf=pref;
+    gone.parentNode.insertBefore(back,gone);gone.remove();
+    emit('convert',{el:back,from:gone,src:'history'});
+    if(keep)carryMode(back,edit,pf);
+  };
+  /* the selection moves to the element that replaced the selected one, in the kind of mode it was in (edit = the new kind's own tool) */
+  const carryMode=(ne,edit,pf)=>{
+    select(perms(ne).selectable?ne:null);if(sel!==ne)return;
+    if(tool!=='pointer'&&!armedFor(sel))setTool('pointer');         // the armed tool was the old kind's
+    if(edit)api.edit();else if(pf!==cur())api.mode=pf;
+  };
   const step=(from,to,dir)=>{
     const g=from.pop();if(!g)return;
     (dir>0?g.items:[...g.items].reverse()).forEach(i=>{
       if(i.add)return stepAdd(i,dir);
+      if(i.swap)return stepSwap(i,dir);
       const v=dir>0?i.nw:i.old;v===null?i.el.removeAttribute(i.attr):i.el.setAttribute(i.attr,v);
       emit('change',{el:i.el,attr:i.attr,src:'history'});
     });
@@ -256,6 +273,43 @@ export function attach(svg,opts={}){
     undoS.push({key:'add:'+(++gid),t:Date.now(),items:[{add:1,el,parent:el.parentNode,next:el.nextSibling}]});redoS.length=0;emit('history');
     select(el);emit('create',{el,src:'tool'}); // the new shape is selected, edit mode: its tool is still armed, ready for the next shape or for fixing this one
   }
+  /* ---- Converting shapes: src/convert.js does the geometry, checkConvert (src/policy.js) the permissions ----
+     A different tag is a different element. So the new one is built beside the old (same attributes, the old geometry swapped for the
+     new), judged by the policy in its place in the document, and only then does it replace the old one: one history item {swap}.
+     ed.on('convert', ({el, from, src})) tells a host that the element it knew is gone. */
+  const convOpts=o=>({arcs:o.arcs,tol:o.tol});
+  /* -> null (nothing to convert to) | {exact, denied?:{cap,reason}} | {ne, vals, exact}; `ne` is left in the document before `el` unless dry or denied */
+  function planConvert(el,to,o={},dry){
+    if(!el||!el.parentNode||el===root||!KINDS.includes(to)||to===el.tagName)return null;
+    const get=a=>el.getAttribute(a),r=convertShape(el.tagName,get,to,convOpts(o));if(!r)return null;
+    const ne=mk(to),geo=GEO[el.tagName]||[];
+    for(const a of el.attributes)if(!geo.includes(a.name))ne.setAttributeNS(a.namespaceURI,a.name,a.value);
+    el.parentNode.insertBefore(ne,el);                         // in its place, so selectors and data-sable-policy on the ancestors see it
+    let vals=new Map(Object.entries(r.attrs)),no=null;
+    if(!o.force){
+      if(!ne.matches(PRIM))no={cap:'select',reason:'capability'};   // the host's selector would no longer pick it
+      else if(P){const c=checkConvert(perms(el),perms(ne),{tagFrom:el.tagName,tagTo:to,get,attrs:r.attrs,env:{}});c.ok?vals=c.values:no={cap:c.cap,reason:c.reason}}
+    }
+    if(no||dry){ne.remove();return {denied:no||undefined,exact:r.exact}}
+    return {ne,vals,exact:r.exact};
+  }
+  function convertEl(el,to,o={}){
+    if(gesture)return null;
+    const p=planConvert(el,to,o);if(!p)return null;
+    if(p.denied){emit('denied',{el,attr:null,cap:p.denied.cap,reason:p.denied.reason,src:o.src||'app'});return null}
+    const {ne}=p,keep=sel===el,edit=keep&&cur()==='edit',pf=pref;
+    p.vals.forEach((v,a)=>ne.setAttribute(a,v));
+    el.remove();
+    undoS.push({key:'convert:'+(++gid),t:Date.now(),items:[{swap:1,from:el,to:ne}]});redoS.length=0;emit('history');
+    emit('convert',{el:ne,from:el,src:o.src||'app',exact:p.exact});
+    if(keep)carryMode(ne,edit,pf);
+    return ne;
+  }
+  /* [{tag, label, exact, allowed}] for the menu or a host's own UI: what el (default: the selected shape) can become, and whether the policy lets it */
+  function convertTargets(el=sel,o={}){
+    if(!el||!el.parentNode||el===root||!perms(el).selectable)return [];
+    return KINDS.flatMap(k=>{const p=planConvert(el,k,o,true);return p?[{tag:k,label:LABELS[k],exact:p.exact,allowed:!p.denied}]:[]});
+  }
   /* An armed tool is its shapes' edit mode as well as their creator. A press that lands on a shape of the tool's own kind edits that shape; anywhere
      else it draws a new one. For a rect, circle, ellipse or line the shape's body counts; for the pens (path, polygon, polyline) only its stroke,
      the fill being where a new one starts. Alt asks for a new shape wherever the press is. */
@@ -306,7 +360,7 @@ export function attach(svg,opts={}){
     const cancel=ev=>{if(ev.pointerId!==id)return;kill();stop()};
     svg.addEventListener('pointermove',mv);svg.addEventListener('pointerup',up);svg.addEventListener('pointercancel',cancel);addEventListener('keydown',esc,true);
   }
-  const menuB=[]; // builders: ({x,y,target,editor}) => [items]; groups are separated automatically
+  const menuB=[]; // builders: ({x,y,target,shape,editor}) => [items]; groups are separated automatically
   const toolItems=()=>{
     const ts=Tools.list.filter(d=>armable(d.id));if(!ts.length)return [];
     return [{label:'Switch Tool',submenu:[{label:'Pointer',checked:tool==='pointer',action:()=>setTool('pointer')},
@@ -320,6 +374,12 @@ export function attach(svg,opts={}){
       {label:'Close path',disabled:!(pn&&pn.canClose()),action:()=>pn&&pn.close()}]:[]),{label:'Finish '+T.label.toLowerCase(),action:penFinish}];
   };
   menuB.push(penItems);
+  const convertItems=({shape})=>{      // right-click on a shape (or on the selected shape's handles): Convert to > ...
+    if(!shape||gesture)return [];
+    const T=convertTargets(shape);if(!T.some(t=>t.allowed))return [];
+    return [{label:'Convert to',submenu:T.map(t=>({label:t.label+(t.exact?'':' (approx.)'),disabled:!t.allowed,action:()=>{const n=convertEl(shape,t.tag,{src:'menu'});if(n&&sel!==n)select(n)}}))}];
+  };
+  menuB.push(convertItems);
   /* hover (mouse / pen, not touch): the cursor says edit, continue or new; a pen also draws the dashed rubber band of its next segment */
   const onPenHover=e=>{ // (any armed tool) over a shape it would edit the cursor is the plain arrow; a pen also shows its rubber band
     const T=Tools.get(tool);if(!T||gesture||e.pointerType==='touch')return;
@@ -330,15 +390,15 @@ export function attach(svg,opts={}){
   const onPenLeave=()=>{layer&&layer.pen&&layer.pen.hover(null)};
   svg.addEventListener('pointermove',onPenHover);svg.addEventListener('pointerleave',onPenLeave);
   const closeMenu=()=>{menuCtl&&menuCtl.close();menuCtl=null};
-  function openMenu(x,y,target=null){
-    const items=[];menuB.forEach(f=>{const l=f({x,y,target,editor:api})||[];if(l.length){items.length&&items.push({sep:1});items.push(...l)}});
+  function openMenu(x,y,target=null,shape=target){   // shape: the one the pointer is on, which is the selected shape for a press on its handles
+    const items=[];menuB.forEach(f=>{const l=f({x,y,target,shape,editor:api})||[];if(l.length){items.length&&items.push({sep:1});items.push(...l)}});
     if(!items.length)return false;closeMenu();menuCtl=openMenuUI(items,x,y,()=>{menuCtl=null});return true;
   }
   const onCtx=e=>{
     if(lp){e.preventDefault();lp.fire();return} // a long press that the browser also reports as a context menu: it means edit mode
     if(performance.now()-lpDone<1000){e.preventDefault();return}
-    if(opts.menu===false||gesture)return;const t=ov.contains(e.target)?null:e.target.closest?.(PRIM);
-    if(openMenu(e.clientX,e.clientY,t&&root.contains(t)?t:null))e.preventDefault();
+    if(opts.menu===false||gesture)return;const own=ov.contains(e.target),t=own?null:e.target.closest?.(PRIM),tt=t&&root.contains(t)?t:null;
+    if(openMenu(e.clientX,e.clientY,tt,own?sel:tt))e.preventDefault();
   };
   svg.addEventListener('pointerdown',toolDown,true);svg.addEventListener('contextmenu',onCtx);
   const api={select,set(el,attr,val,src,o){return setAttr(el,attr,val,src,undefined,o&&o.force)},
@@ -364,6 +424,11 @@ export function attach(svg,opts={}){
     get tool(){return tool},set tool(id){setTool(id)},
     get penSegment(){return penSeg},set penSegment(k){if(!PEN_SEGS.some(q=>q[0]===k)||k===penSeg)return;penSeg=k;emit('pen',{segment:k});layer&&layer.pen&&layer.pen.hover(null)}, // what the pen's next node adds: 'auto' | 'L' | 'Q' | 'C' | 'A'
     get tools(){return Tools.list.filter(d=>armable(d.id)).map(({id,label})=>({id,label,create:toolOk(id)}))}, // create: false = it can only edit the shapes of its kind
+    /* convert([el,] tag[, {arcs, tol, force}]) -> the new element (the selection and its mode carry over) or null; convertTargets([el]) lists what is on offer;
+       canConvert([el,] tag) says whether the policy lets it. See 'Converting shapes' in src/convert.js for what each conversion does. */
+    convert(a,b,c){const s=typeof a==='string';return convertEl(s?sel:a,s?a:b,(s?b:c)||{})},
+    convertTargets(el=sel,o){return convertTargets(el,o||{})},
+    canConvert(a,b){const s=typeof a==='string',el=s?sel:a;return !!el&&convertTargets(el).some(t=>t.tag===(s?a:b)&&t.allowed)},
     openMenu,closeMenu,addMenu(f){menuB.push(f);return ()=>{const i=menuB.indexOf(f);i>=0&&menuB.splice(i,1)}},
     /* permissions: can([el,] capability) and canSet([el,] attr) answer for host UIs (el defaults to the selected shape);
        policy (get/set) swaps the whole policy at runtime */

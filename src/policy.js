@@ -7,6 +7,7 @@
        select  CSS selector | (el)=>bool | element | array of those. Omitted = every element.
        can     capabilities to grant ('all', 'transform.*', or exact names). cannot removes them again. Within one rule
                `cannot` wins; across rules the later rule wins (rules are applied in order).
+               element.convert lets the user change the shape into another kind (rect -> path...); see checkConvert().
        attrs   {allow?:[globs], deny?:[globs]} filters the attributes that `attrs.edit` covers (fill, stroke, style, class...).
                A later rule's allow / deny replaces an earlier one's. Names are globs ('stroke*'); style="..." is
                checked property by property, so denying 'stroke' blocks both the attribute and the style property.
@@ -56,7 +57,7 @@
 import {parsePath,serPath,arcGeom} from './path-math.js';
 import {rnd} from './util.js';
 
-export const CAPS=['transform.move','transform.scale','transform.rotate','transform.skew','geometry.edit','nodes.insert','nodes.delete','attrs.edit'];
+export const CAPS=['transform.move','transform.scale','transform.rotate','transform.skew','geometry.edit','nodes.insert','nodes.delete','attrs.edit','element.convert'];
 const XF=CAPS.filter(c=>c.startsWith('transform.'));
 /* attributes a widget gesture writes, per tag: these belong to geometry.edit (or to the move/scale capability that was declared) */
 export const GEO={path:['d'],polygon:['points'],polyline:['points'],line:['x1','y1','x2','y2'],rect:['x','y','width','height','rx','ry'],circle:['cx','cy','r'],ellipse:['cx','cy','rx','ry']};
@@ -532,4 +533,28 @@ export function canSet(p,tag,attr){
   if(GEO[tag]&&GEO[tag].includes(attr))return p.can('geometry.edit');
   if(attr==='transform')return XF.some(c=>p.can(c));
   return p.can('attrs.edit')&&(attr==='style'?!p.denied('style'):p.propOk(attr));
+}
+
+/* May a shape become another kind (a rect a path, a circle an ellipse...)? A new tag is a new element, so the policy is asked about both:
+   `from` (resolved for the shape as it is) needs element.convert and geometry.edit; `to` (resolved for the finished element, in its place in
+   the document, so selectors and markup see it) must still be selectable and allow geometry.edit, or the shape would slip out of the editor.
+   Pins refuse either way (they name nodes, and a path made from a rect has different ones). Ranges and nodes.insert are judged on the
+   attributes of the new shape, which ranges may clamp. Bounds are judged on its extent: it may not stick out further than the old shape did
+   (refused, not clamped; an approximate conversion is the only one that can grow). Snap is not applied: nothing is being moved.
+   a: {tagFrom, tagTo, get (the old shape's attributes), attrs: {name: string} (the new shape's geometry), env}
+   -> {ok:true, values: Map attr -> string to store} | {ok:false, cap, reason: 'capability'|'pinned'|'range'|'bounds'} */
+export function checkConvert(from,to,a){
+  const no=(cap,reason)=>({ok:false,cap,reason});
+  if(!from.can('element.convert'))return no('element.convert','capability');
+  if(!from.can('geometry.edit'))return no('geometry.edit','capability');
+  if(!to.selectable)return no('select','capability');
+  if(!to.can('geometry.edit'))return no('geometry.edit','capability');
+  if(from.pin.length||to.pin.length)return no('pin','pinned');
+  const r=checkWrites({...to,bounds:null,snap:null},a.tagTo,()=>null,Object.entries(a.attrs).map(([attr,nw])=>({attr,nw})),a.env);
+  if(!r.ok)return no(r.cap,r.reason);
+  if(to.bounds){
+    const val=k=>k==='transform'?a.get('transform'):r.values.has(k)?r.values.get(k):null,nb=shapeBox(a.tagTo,val,a.env),ob=shapeBox(a.tagFrom,a.get,a.env);
+    if(!nb||!ob||viol(to.bounds,nb)>viol(to.bounds,ob)+TOL)return bad();
+  }
+  return {ok:true,values:r.values};
 }

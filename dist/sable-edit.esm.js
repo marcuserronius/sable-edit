@@ -3,7 +3,7 @@
   Options: root (limit editable subtree), overlay (existing <g> to draw handles in), mode ('scale'|'rotate'|'edit', default 'scale'),
            pick (default true: press an element to select it, click empty space to deselect),
            selector (editable elements, default basic shapes + path + text),
-           onSelect(el), onChange(el, attr, src), onCreate(el),
+           onSelect(el), onChange(el, attr, src), onCreate(el), onConvert(el, from),
            createIn (element or selector: where new shapes go, default root), shapeAttrs (attributes for new shapes, default a light
            fill + 2px stroke; if you pass `selector`, include something in shapeAttrs that matches it, e.g. {class:'edit'}),
            menu (default true: right-click / Ctrl-click opens the context menu; false leaves the browser's menu alone),
@@ -25,14 +25,24 @@
             (Delete / Backspace / Escape do the same while the page has focus, unless keys:false; the 'key' event lets an editor claim them),
             tool (get/set: 'pointer' or a tool id, stays until changed), tools (what is registered),
             penSegment (get/set what the path pen's next node adds: 'auto' | 'L' | 'Q' | 'C' | 'A'),
-            openMenu(x,y), closeMenu(), addMenu(({x,y,target,editor}) => [items]) (returns a remover),
-            on('select'|'change'|'history'|'mode'|'tool'|'pen'|'create'|'remove'|'denied', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
+            convert([el,] tag[, {arcs, tol, force}]) (change a shape into another kind: 'path'|'rect'|'circle'|'ellipse'|'line'|'polygon'|'polyline'; returns the new
+            element, or null if there is no such conversion or the policy refused (force:true skips it). A new tag is a new element: built beside the old,
+            same attributes, new geometry, one undo step; the selection and its mode carry over; the 'convert' event ({el, from, src}) / onConvert(el, from)
+            tell the host the old element is gone), convertTargets([el]) ([{tag, label, exact, allowed}]: what is on offer; exact = same outline, else an
+            approximation), canConvert([el,] tag) (src/convert.js: every shape -> path exactly (lines H/V/L, circle / ellipse four arcs, arcs:false = cubics);
+            a path that is an axis-aligned rectangle -> rect, arcs once round one centre -> ellipse / circle; a fully rounded rect IS an ellipse; rect / circle /
+            ellipse / path / polygon -> circle keeps the area, r = sqrt(rx*ry); path / polygon -> rect / ellipse that is not one is its bounding box (approx);
+            curves -> polygon / polyline are flattened within tol; polygon <-> polyline keeps the closing edge; a one-segment shape -> line),
+            openMenu(x,y), closeMenu(), addMenu(({x,y,target,shape,editor}) => [items]) (shape: the shape under the pointer, the selected one for its handles; returns a remover),
+            on('select'|'change'|'history'|'mode'|'tool'|'pen'|'create'|'remove'|'convert'|'denied', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
   Permissions: policy is a list of rules, applied in order; nothing is allowed until a rule grants it, and a shape nothing is granted to
     can't be selected (so {select:'.edit', can:'all'} is the old 'these shapes are editable'). Pass {rules:[...], create:false|[tool ids]} (create = which tools may DRAW new shapes; a tool still arms to edit the shapes of its kind that the rules allow, ed.tools[i].create says which)
     to also limit which creation tools the menu offers. A rule is {select, can, cannot, attrs, pin, bounds, ranges, snap}:
       select  CSS selector | (el)=>bool | element | array of those (omitted = every shape)
       can / cannot  capabilities: transform.move|scale|rotate|skew, geometry.edit (the edit mode), nodes.insert|delete (need geometry.edit),
-              attrs.edit (every other attribute: fill, stroke, style, class...); 'all' and 'group.*' work. Within a rule cannot wins; a later rule wins.
+              attrs.edit (every other attribute: fill, stroke, style, class...), element.convert (change the shape into another kind: right-click > Convert to, ed.convert();
+              needs geometry.edit; the new element is judged by the rules that select it, must stay selectable with geometry.edit, a pin on either side refuses,
+              ranges clamp, bounds may not be exceeded further than before, snap isn't applied); 'all', 'element.*' and 'group.*' work. Within a rule cannot wins; a later rule wins.
       attrs   {allow:[globs], deny:[globs]} narrows attrs.edit; 'stroke*' blocks the attribute and style="stroke..." alike
       pin     'endpoints' (first/last node of an open path/polyline; both ends of a line) and/or node indices (negative = from the end);
               a pinned node can't move or be deleted (its bezier handles stay free). Any pin turns the shape's transform.* off, and an index pin
@@ -72,7 +82,7 @@
     Every write goes through the policy (widgets, move/scale/rotate gestures, ed.set), so it holds even for edits that don't come from a handle.
     It guards the user, not the page: script that can reach the DOM can still write attributes. For a real guarantee, run checkWrite() from
     src/policy.js (pure, works in Node) on the server. Mistakes in a policy (unknown capability, rule key typo) throw at attach time.
-  Context menu: right-click (Ctrl-click on a Mac) anywhere on the canvas. 'Switch Tool' keeps the tool until you pick Pointer (or press Esc);
+  Context menu: right-click (Ctrl-click on a Mac) anywhere on the canvas; on a shape (or the selected shape's handles) there is Convert to > Path / Rectangle / ... (approximations say so). 'Switch Tool' keeps the tool until you pick Pointer (or press Esc);
     with the pen armed it also has Next segment, Close path and Finish path. Items are {label, action, checked, disabled, submenu:[...]} or {sep:1}.
   Tools:    the pointer tool is the editing behaviour described below; other tools create shapes. Built in: circle (press = centre, drag = radius),
             rect (press = one corner, release = the opposite corner, any direction), ellipse (the same two corners, of its bounding box),
@@ -138,14 +148,14 @@ var mk = (n, a = {}) => {
 var lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 var dc = (p, t) => p.length === 1 ? p[0] : dc(p.slice(1).map((q, k) => lerp(p[k], q, t)), t);
 var split = (p, t) => {
-  const L = [], R2 = [];
+  const L2 = [], R2 = [];
   let q = p;
   while (q.length) {
-    L.push(q[0]);
+    L2.push(q[0]);
     R2.unshift(q.at(-1));
     q = q.slice(1).map((v, k) => lerp(q[k], v, t));
   }
-  return [L, R2];
+  return [L2, R2];
 };
 var NARGS = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0 };
 function parsePath(d) {
@@ -302,23 +312,23 @@ function arcFit(P, E, arc, kind, p, opts = {}) {
       return k > 1e-12 ? Math.abs(a) / Math.sqrt(k) : 0;
     })();
     const tmin = Math.max(Math.ceil(lo * 1e3) / 1e3, 0.1);
-    const res = (t) => {
+    const res2 = (t) => {
       const q = arcGeom(P, E, X || sh ? t : rx, !X || sh ? t : ry, phi, fa, fs);
       if (!q) return NaN;
       const dx = p[0] - q.cx, dy = p[1] - q.cy;
       return X ? dx * q.c + dy * q.s - gap - q.rx : -dx * q.s + dy * q.c - gap - q.ry;
     };
     let v = tmin;
-    if (res(tmin) > 0) {
+    if (res2(tmin) > 0) {
       const hi = 50 * (Math.hypot(E[0] - P[0], E[1] - P[1]) + t0 + tmin), N = 160, k = Math.pow(hi / tmin, 1 / N);
-      let best = null, prev = { t: tmin, f: res(tmin) };
+      let best = null, prev = { t: tmin, f: res2(tmin) };
       for (let n = 1, t = tmin * k; n <= N; n++, t *= k) {
-        const f2 = res(t);
+        const f2 = res2(t);
         if (isNaN(f2)) continue;
         if (prev.f < 0 !== f2 < 0) {
           let a = prev.t, b = t, fa_ = prev.f;
           for (let m = 0; m < 40; m++) {
-            const mid2 = (a + b) / 2, fm = res(mid2);
+            const mid2 = (a + b) / 2, fm = res2(mid2);
             if (fm < 0 === fa_ < 0) {
               a = mid2;
               fa_ = fm;
@@ -539,9 +549,9 @@ function nodeType(segs, j, info = segInfo(segs)) {
   const h = nodeHandles(segs, j, info);
   if (!h || !h.a || !h.b) return null;
   if (h.flag >= 0 && segs[h.flag].sm) return "symmetric";
-  const A2 = vec(segs[h.a.i].pts[h.a.k], h.n), B = vec(segs[h.b.i].pts[h.b.k], h.n), la = vlen(A2), lb = vlen(B);
+  const A3 = vec(segs[h.a.i].pts[h.a.k], h.n), B = vec(segs[h.b.i].pts[h.b.k], h.n), la = vlen(A3), lb = vlen(B);
   if (la < 5e-3 || lb < 5e-3) return "corner";
-  if (Math.abs(A2[0] * B[1] - A2[1] * B[0]) / (la * lb) > 5e-3 || A2[0] * B[0] + A2[1] * B[1] >= 0) return "corner";
+  if (Math.abs(A3[0] * B[1] - A3[1] * B[0]) / (la * lb) > 5e-3 || A3[0] * B[0] + A3[1] * B[1] >= 0) return "corner";
   return Math.abs(la - lb) <= Math.max(5e-3, 1e-3 * Math.max(la, lb)) ? "symmetric" : "smooth";
 }
 function handleLinks(segs, i, k) {
@@ -562,31 +572,31 @@ function handleLinks(segs, i, k) {
 }
 function dragHandle(segs, i, k, p, links, force) {
   segs[i].pts[k] = p;
-  for (const L of links) {
-    const mode = force === "free" ? "corner" : force === "sym" ? "symmetric" : L.type, q = segs[L.partner.i];
-    if (mode === "symmetric") q.pts[L.partner.k] = refl(p, L.node);
+  for (const L2 of links) {
+    const mode = force === "free" ? "corner" : force === "sym" ? "symmetric" : L2.type, q = segs[L2.partner.i];
+    if (mode === "symmetric") q.pts[L2.partner.k] = refl(p, L2.node);
     else if (mode === "smooth") {
-      const v = vec(L.node, p), d = vlen(v);
-      if (d > 1e-6) q.pts[L.partner.k] = [L.node[0] + v[0] / d * L.len, L.node[1] + v[1] / d * L.len];
+      const v = vec(L2.node, p), d = vlen(v);
+      if (d > 1e-6) q.pts[L2.partner.k] = [L2.node[0] + v[0] / d * L2.len, L2.node[1] + v[1] / d * L2.len];
     }
-    if (L.flag >= 0) {
-      if (force === "free") delete segs[L.flag].sm;
-      else if (force === "sym" && segs[L.flag].t === segs[L.flag - 1]?.t) segs[L.flag].sm = 1;
+    if (L2.flag >= 0) {
+      if (force === "free") delete segs[L2.flag].sm;
+      else if (force === "sym" && segs[L2.flag].t === segs[L2.flag - 1]?.t) segs[L2.flag].sm = 1;
     }
   }
 }
 function setNodeType(segs, j, type) {
   const h = nodeHandles(segs, j);
   if (!h || !h.a || !h.b) return null;
-  const out = segs.map(clone), A2 = out[h.a.i].pts[h.a.k], B = out[h.b.i], la = vlen(vec(A2, h.n)), lb = vlen(vec(B.pts[h.b.k], h.n));
+  const out = segs.map(clone), A3 = out[h.a.i].pts[h.a.k], B = out[h.b.i], la = vlen(vec(A3, h.n)), lb = vlen(vec(B.pts[h.b.k], h.n));
   if (type === "corner") {
     if (h.flag >= 0) delete out[h.flag].sm;
   } else if (type === "smooth") {
     if (la < 5e-3) return null;
-    const L = lb < 5e-3 ? la : lb;
-    B.pts[h.b.k] = [h.n[0] - (A2[0] - h.n[0]) / la * L, h.n[1] - (A2[1] - h.n[1]) / la * L];
+    const L2 = lb < 5e-3 ? la : lb;
+    B.pts[h.b.k] = [h.n[0] - (A3[0] - h.n[0]) / la * L2, h.n[1] - (A3[1] - h.n[1]) / la * L2];
   } else if (type === "symmetric") {
-    B.pts[h.b.k] = refl(A2, h.n);
+    B.pts[h.b.k] = refl(A3, h.n);
     if (h.flag >= 0 && out[h.flag].t === out[h.flag - 1]?.t) out[h.flag].sm = 1;
   } else return null;
   return healSmooth(out);
@@ -722,7 +732,7 @@ var rnd = (v) => +v.toFixed(3);
 var box4 = (x, y, w, h) => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
 
 // src/policy.js
-var CAPS = ["transform.move", "transform.scale", "transform.rotate", "transform.skew", "geometry.edit", "nodes.insert", "nodes.delete", "attrs.edit"];
+var CAPS = ["transform.move", "transform.scale", "transform.rotate", "transform.skew", "geometry.edit", "nodes.insert", "nodes.delete", "attrs.edit", "element.convert"];
 var XF = CAPS.filter((c) => c.startsWith("transform."));
 var GEO = { path: ["d"], polygon: ["points"], polyline: ["points"], line: ["x1", "y1", "x2", "y2"], rect: ["x", "y", "width", "height", "rx", "ry"], circle: ["cx", "cy", "r"], ellipse: ["cx", "cy", "rx", "ry"] };
 var NODE_ATTRS = { path: ["d"], polygon: ["points"], polyline: ["points"], line: ["x1", "y1", "x2", "y2"] };
@@ -1079,11 +1089,11 @@ function rangeValue(p, attr, old, nw) {
   const v = clampNum(rs, +m[1]);
   return v === +m[1] ? nw : rnd(v) + m[2];
 }
-var mul = (A2, B) => [A2[0] * B[0] + A2[2] * B[1], A2[1] * B[0] + A2[3] * B[1], A2[0] * B[2] + A2[2] * B[3], A2[1] * B[2] + A2[3] * B[3], A2[0] * B[4] + A2[2] * B[5] + A2[4], A2[1] * B[4] + A2[3] * B[5] + A2[5]];
-var ap = (M, q) => [M[0] * q[0] + M[2] * q[1] + M[4], M[1] * q[0] + M[3] * q[1] + M[5]];
-var inv = (M) => {
-  const d = M[0] * M[3] - M[1] * M[2];
-  return Math.abs(d) < 1e-12 ? null : [M[3] / d, -M[1] / d, -M[2] / d, M[0] / d, (M[2] * M[5] - M[3] * M[4]) / d, (M[1] * M[4] - M[0] * M[5]) / d];
+var mul = (A3, B) => [A3[0] * B[0] + A3[2] * B[1], A3[1] * B[0] + A3[3] * B[1], A3[0] * B[2] + A3[2] * B[3], A3[1] * B[2] + A3[3] * B[3], A3[0] * B[4] + A3[2] * B[5] + A3[4], A3[1] * B[4] + A3[3] * B[5] + A3[5]];
+var ap = (M2, q) => [M2[0] * q[0] + M2[2] * q[1] + M2[4], M2[1] * q[0] + M2[3] * q[1] + M2[5]];
+var inv = (M2) => {
+  const d = M2[0] * M2[3] - M2[1] * M2[2];
+  return Math.abs(d) < 1e-12 ? null : [M2[3] / d, -M2[1] / d, -M2[2] / d, M2[0] / d, (M2[2] * M2[5] - M2[3] * M2[4]) / d, (M2[1] * M2[4] - M2[0] * M2[5]) / d];
 };
 function parseTransform(str) {
   let m = [1, 0, 0, 1, 0, 0];
@@ -1149,14 +1159,14 @@ function hullPts(tag, get, env) {
   return b ? [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]] : null;
 }
 function shapeBox(tag, get, env) {
-  const M = parseTransform(get("transform"));
+  const M2 = parseTransform(get("transform"));
   if (tag === "circle" || tag === "ellipse") {
-    const rx = Math.abs(tag === "circle" ? flt(get, "r") : flt(get, "rx")), ry = tag === "circle" ? rx : Math.abs(flt(get, "ry")), c = ap(M, [flt(get, "cx"), flt(get, "cy")]), hx = Math.hypot(M[0] * rx, M[2] * ry), hy = Math.hypot(M[1] * rx, M[3] * ry);
+    const rx = Math.abs(tag === "circle" ? flt(get, "r") : flt(get, "rx")), ry = tag === "circle" ? rx : Math.abs(flt(get, "ry")), c = ap(M2, [flt(get, "cx"), flt(get, "cy")]), hx = Math.hypot(M2[0] * rx, M2[2] * ry), hy = Math.hypot(M2[1] * rx, M2[3] * ry);
     return [c[0] - hx, c[1] - hy, c[0] + hx, c[1] + hy];
   }
   const pts = hullPts(tag, get, env);
   if (!pts || !pts.length) return null;
-  const q = pts.map((r) => ap(M, r)), xs = q.map((r) => r[0]), ys = q.map((r) => r[1]);
+  const q = pts.map((r) => ap(M2, r)), xs = q.map((r) => r[0]), ys = q.map((r) => r[1]);
   return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
 }
 var viol = (B, b, axis = "XY") => (axis !== "Y" ? Math.max(0, B[0] - b[0]) + Math.max(0, b[2] - B[2]) : 0) + (axis !== "X" ? Math.max(0, B[1] - b[1]) + Math.max(0, b[3] - B[3]) : 0);
@@ -1171,7 +1181,7 @@ function fitBounds(p, tag, get, fin, attrs, isMove, env) {
   if (!bNew || !bOld) return bad();
   const vOld = viol(B, bOld);
   if (viol(B, bNew) <= vOld + TOL) return { ok: true, values: fin };
-  const out = new Map(fin), M = parseTransform(val("transform")), Mi = inv(M);
+  const out = new Map(fin), M2 = parseTransform(val("transform")), Mi = inv(M2);
   const done = () => {
     const nb = shapeBox(tag, (k) => out.has(k) ? out.get(k) : get(k), env);
     return nb && viol(B, nb) <= vOld + TOL ? { ok: true, values: out } : bad();
@@ -1193,7 +1203,7 @@ function fitBounds(p, tag, get, fin, attrs, isMove, env) {
     }
     const clamp = (q, old) => {
       if (old && Math.abs(q[0] - old[0]) < 1e-9 && Math.abs(q[1] - old[1]) < 1e-9) return q;
-      const w = ap(M, q);
+      const w = ap(M2, q);
       if (w[0] >= B[0] && w[0] <= B[2] && w[1] >= B[1] && w[1] <= B[3]) return q;
       return ap(Mi, [Math.min(B[2], Math.max(B[0], w[0])), Math.min(B[3], Math.max(B[1], w[1]))]);
     };
@@ -1213,7 +1223,7 @@ function fitBounds(p, tag, get, fin, attrs, isMove, env) {
     o[a] = flt(get, a);
     n[a] = flt(val, a);
   });
-  const aligned = Math.abs(M[1]) < 1e-9 && Math.abs(M[2]) < 1e-9, joint = !aligned || chg.some((a) => ax[a] === "XY");
+  const aligned = Math.abs(M2[1]) < 1e-9 && Math.abs(M2[2]) < 1e-9, joint = !aligned || chg.some((a) => ax[a] === "XY");
   const groups = joint ? [{ attrs: chg, axis: "XY" }] : ["X", "Y"].map((g) => ({ attrs: chg.filter((a) => ax[a] === g), axis: g })).filter((g) => g.attrs.length);
   for (const g of groups) {
     const st = (t) => (k) => g.attrs.includes(k) ? String(o[k] + (n[k] - o[k]) * t) : chg.includes(k) ? String(n[k]) : val(k);
@@ -1324,16 +1334,16 @@ function snapChanges(p, tag, get, changes, env) {
     }
   }
   if (prop.has("transform") && changes.some((c) => c.attr === "transform" && [].concat(c.hint || []).includes("transform.move"))) {
-    const M = parseTransform(prop.get("transform")), M0 = parseTransform(get("transform"));
-    if (M.some((v, i) => moved(v, M0[i]))) {
-      const b = env && env.bbox && env.bbox(), ref = b ? ap(M, [b[0], b[1]]) : [M[4], M[5]], sh = [snapQ(ref[0], S[0]) - ref[0], snapQ(ref[1], S[1]) - ref[1]];
-      if (moved(sh[0], 0) || moved(sh[1], 0)) out.set("transform", "matrix(" + mul([1, 0, 0, 1, sh[0], sh[1]], M).map((v, i) => +v.toFixed(i < 4 ? 6 : 3)).join(" ") + ")");
+    const M2 = parseTransform(prop.get("transform")), M0 = parseTransform(get("transform"));
+    if (M2.some((v, i) => moved(v, M0[i]))) {
+      const b = env && env.bbox && env.bbox(), ref = b ? ap(M2, [b[0], b[1]]) : [M2[4], M2[5]], sh = [snapQ(ref[0], S[0]) - ref[0], snapQ(ref[1], S[1]) - ref[1]];
+      if (moved(sh[0], 0) || moved(sh[1], 0)) out.set("transform", "matrix(" + mul([1, 0, 0, 1, sh[0], sh[1]], M2).map((v, i) => +v.toFixed(i < 4 ? 6 : 3)).join(" ") + ")");
     }
   }
   if (!out.size) return changes;
-  const res = changes.map((c) => out.has(c.attr) ? { ...c, nw: out.get(c.attr) } : c);
-  for (const [a, v] of out) if (!changes.some((c) => c.attr === a)) res.push({ attr: a, nw: v, hint: changes[0].hint });
-  return res;
+  const res2 = changes.map((c) => out.has(c.attr) ? { ...c, nw: out.get(c.attr) } : c);
+  for (const [a, v] of out) if (!changes.some((c) => c.attr === a)) res2.push({ attr: a, nw: v, hint: changes[0].hint });
+  return res2;
 }
 function checkOne(p, tag, get, attr, nw, hint) {
   const no = (cap, reason) => ({ ok: false, cap, reason });
@@ -1372,6 +1382,21 @@ function canSet(p, tag, attr) {
   if (GEO[tag] && GEO[tag].includes(attr)) return p.can("geometry.edit");
   if (attr === "transform") return XF.some((c) => p.can(c));
   return p.can("attrs.edit") && (attr === "style" ? !p.denied("style") : p.propOk(attr));
+}
+function checkConvert(from, to, a) {
+  const no = (cap, reason) => ({ ok: false, cap, reason });
+  if (!from.can("element.convert")) return no("element.convert", "capability");
+  if (!from.can("geometry.edit")) return no("geometry.edit", "capability");
+  if (!to.selectable) return no("select", "capability");
+  if (!to.can("geometry.edit")) return no("geometry.edit", "capability");
+  if (from.pin.length || to.pin.length) return no("pin", "pinned");
+  const r = checkWrites({ ...to, bounds: null, snap: null }, a.tagTo, () => null, Object.entries(a.attrs).map(([attr, nw]) => ({ attr, nw })), a.env);
+  if (!r.ok) return no(r.cap, r.reason);
+  if (to.bounds) {
+    const val = (k) => k === "transform" ? a.get("transform") : r.values.has(k) ? r.values.get(k) : null, nb = shapeBox(a.tagTo, val, a.env), ob = shapeBox(a.tagFrom, a.get, a.env);
+    if (!nb || !ob || viol(to.bounds, nb) > viol(to.bounds, ob) + TOL) return bad();
+  }
+  return { ok: true, values: r.values };
 }
 
 // src/selection.js
@@ -1484,9 +1509,9 @@ function penNode(segs, head, p, o = {}) {
   } else s = kind === "L" || kind === "auto" ? { t: "L", pts: [[...p]] } : null;
   if (drag && (kind === "auto" || kind === "C")) nout = { pt: [...h], sym };
   if (!s) return null;
-  const res = segs.map(cp);
-  res.splice(head + 1, 0, { ...s, dirty: 1 });
-  return { segs: healSmooth(res), idx: head + 1, out: nout };
+  const res2 = segs.map(cp);
+  res2.splice(head + 1, 0, { ...s, dirty: 1 });
+  return { segs: healSmooth(res2), idx: head + 1, out: nout };
 }
 function canClose(segs, head) {
   const { m, last, closed } = subOf(segs, head);
@@ -1495,29 +1520,29 @@ function canClose(segs, head) {
 function closeSub(segs, head, o = {}) {
   if (!canClose(segs, head)) return null;
   const { m } = subOf(segs, head), kind = o.kind || "auto", curved = kind === "Q" || kind === "C" || kind === "A" || kind === "auto" && (o.out || o.drag);
-  let res = segs, at = head;
+  let res2 = segs, at = head;
   if (curved) {
     const r = penNode(segs, head, segs[m].pts[0], { kind, out: o.out, drag: o.drag });
     if (r) {
-      res = r.segs;
+      res2 = r.segs;
       at = r.idx;
     }
   }
-  res = res.map(cp);
-  res.splice(at + 1, 0, { t: "Z", pts: [] });
-  return { segs: healSmooth(res), idx: m };
+  res2 = res2.map(cp);
+  res2.splice(at + 1, 0, { t: "Z", pts: [] });
+  return { segs: healSmooth(res2), idx: m };
 }
 var NUM2 = /[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
 var polyCount = (s) => Math.floor(((s || "").match(NUM2) || []).length / 2);
 var polyEnd = (n, j, closed) => j < 0 || j >= n ? null : closed ? "ring" : n === 1 ? "lone" : j === n - 1 ? "end" : j === 0 ? "start" : null;
 function polyAdd(pts, head, p, closed) {
-  const res = pts.map((q) => [...q]);
+  const res2 = pts.map((q) => [...q]);
   if (polyEnd(pts.length, head, closed) === "start") {
-    res.unshift([...p]);
-    return { pts: res, idx: 0 };
+    res2.unshift([...p]);
+    return { pts: res2, idx: 0 };
   }
-  res.splice(head + 1, 0, [...p]);
-  return { pts: res, idx: head + 1 };
+  res2.splice(head + 1, 0, [...p]);
+  return { pts: res2, idx: head + 1 };
 }
 function headAfter(old, now, closed) {
   if (old.length === now.length) return -1;
@@ -1681,8 +1706,8 @@ function setNodeTypeAt(segs, j, type) {
     const real = (side) => (arcs || isB(side === "a" ? A0 : B0)) && dist2(hOf(side), n) >= 5e-3, ra = real("a"), rb = real("b");
     let La = ra ? dist2(hOf("a"), n) : dist2(n, farPt("a")) / 2, Lb = rb ? dist2(hOf("b"), n) : dist2(n, farPt("b")) / 2;
     if (sym) {
-      const L = ra === rb ? (La + Lb) / 2 : ra ? La : Lb;
-      La = Lb = L;
+      const L2 = ra === rb ? (La + Lb) / 2 : ra ? La : Lb;
+      La = Lb = L2;
     }
     if (La < 5e-3 || Lb < 5e-3) return null;
     setH("a", along(n, t, -La));
@@ -1710,7 +1735,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
   ctx.overlay.append(g);
   let segs = parsePath(el.getAttribute("d") || ""), tw = [], items = [], lines = [], hit, gh, sg, pv, dead = false, mv0 = false, mv1 = false, arcs = [], pinned = /* @__PURE__ */ new Set();
   const S = selection();
-  const f2 = (v) => +v.toFixed(3), A2 = (e, o) => {
+  const f2 = (v) => +v.toFixed(3), A3 = (e, o) => {
     for (const k in o) e.setAttribute(k, o[k]);
   };
   const ser = () => serPath(segs);
@@ -1860,9 +1885,9 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
   function insert(p) {
     const best = nearestSeg(segs, p, { arcs: false });
     if (!best) return;
-    const { i, t, cp: cp2 } = best, s = segs[i], [L, R2] = split(cp2, t);
-    if (s.t === "Z") segs.splice(i, 0, { t: "L", pts: [L.at(-1)], dirty: 1 });
-    else segs.splice(i, 1, { t: s.t, pts: L.slice(1), dirty: 1 }, { t: s.t, pts: R2.slice(1), dirty: 1 });
+    const { i, t, cp: cp2 } = best, s = segs[i], [L2, R2] = split(cp2, t);
+    if (s.t === "Z") segs.splice(i, 0, { t: "L", pts: [L2.at(-1)], dirty: 1 });
+    else segs.splice(i, 1, { t: s.t, pts: L2.slice(1), dirty: 1 }, { t: s.t, pts: R2.slice(1), dirty: 1 });
     S.pick("node", i);
     healSmooth(segs);
     write();
@@ -1873,8 +1898,8 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     return s && s.t === "A" ? arcGeom(prevPt(i), s.pts[0], ...s.arc) : null;
   };
   const GAP = 16, gapL = () => {
-    const M = ctx.matrix();
-    return ctx.px(GAP) / (Math.hypot(M.a, M.b) || 1);
+    const M2 = ctx.matrix();
+    return ctx.px(GAP) / (Math.hypot(M2.a, M2.b) || 1);
   };
   const ln = (a, b, o = {}) => {
     const l = mk("line", { stroke: "var(--acc,#2f6fed)", opacity: o.op || 0.55 });
@@ -2004,24 +2029,24 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     layout();
   }
   function layout() {
-    const M = ctx.matrix(), T = (p) => {
-      const q = new DOMPoint(p[0], p[1]).matrixTransform(M);
+    const M2 = ctx.matrix(), T = (p) => {
+      const q = new DOMPoint(p[0], p[1]).matrixTransform(M2);
       return [q.x, q.y];
     }, info = segInfo(segs), types = segs.map((_, j) => nodeTypeAny(segs, j, info, tw)), w = ctx.px(1.5);
-    A2(hit, { d: ser(), transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
+    A3(hit, { d: ser(), transform: `matrix(${M2.a} ${M2.b} ${M2.c} ${M2.d} ${M2.e} ${M2.f})` });
     lines.forEach((l) => {
       const a0 = l.a(), b0 = l.b(), show = a0 && b0 && (!l.vis || l.vis());
       l.el.style.display = show ? "" : "none";
       if (!show) return;
       const a = T(a0), b = T(b0);
-      A2(l.el, { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": ctx.px(1), "stroke-dasharray": l.dash ? ctx.px(2) + " " + ctx.px(3) : "none" });
+      A3(l.el, { x1: a[0], y1: a[1], x2: b[0], y2: b[1], "stroke-width": ctx.px(1), "stroke-dasharray": l.dash ? ctx.px(2) + " " + ctx.px(3) : "none" });
     });
     items.forEach((it) => {
       const pt = it.vis && !it.vis() ? null : it.get();
       it.el.style.display = pt ? "" : "none";
       if (!pt) return;
       const [x, y] = T(pt), r = ctx.px(it.r);
-      A2(it.el, it.n ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
+      A3(it.el, it.n ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
       if (it.n) {
         const ty = types[it.node], rx = ty === "symmetric" ? r : ty === "smooth" ? r * 0.45 : 0;
         it.el.setAttribute("rx", rx);
@@ -2031,11 +2056,11 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
         else it.el.setAttribute("fill", sl ? "var(--acc,#2f6fed)" : "var(--panel,#fff)");
       }
     });
-    sg.replaceChildren(...(S.kind === "seg" ? S.items : []).map((i) => segD(segs, i)).filter(Boolean).map((d) => mk("path", { d, fill: "none", stroke: "var(--acc,#2f6fed)", opacity: 0.45, "stroke-width": 6, "stroke-linecap": "round", "vector-effect": "non-scaling-stroke", transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` })));
+    sg.replaceChildren(...(S.kind === "seg" ? S.items : []).map((i) => segD(segs, i)).filter(Boolean).map((d) => mk("path", { d, fill: "none", stroke: "var(--acc,#2f6fed)", opacity: 0.45, "stroke-width": 6, "stroke-linecap": "round", "vector-effect": "non-scaling-stroke", transform: `matrix(${M2.a} ${M2.b} ${M2.c} ${M2.d} ${M2.e} ${M2.f})` })));
     arcs.forEach(({ i, ell }) => {
       const q = on(i) && geom(i);
       ell.style.display = q ? "" : "none";
-      if (q) A2(ell, { rx: q.rx, ry: q.ry, transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f}) translate(${q.cx} ${q.cy}) rotate(${q.phi * 180 / Math.PI})` });
+      if (q) A3(ell, { rx: q.rx, ry: q.ry, transform: `matrix(${M2.a} ${M2.b} ${M2.c} ${M2.d} ${M2.e} ${M2.f}) translate(${q.cx} ${q.cy}) rotate(${q.phi * 180 / Math.PI})` });
     });
   }
   let drawM = null;
@@ -2159,8 +2184,8 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
         pv.style.display = "none";
         return;
       }
-      const M = ctx.matrix();
-      A2(pv, { d, transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
+      const M2 = ctx.matrix();
+      A3(pv, { d, transform: `matrix(${M2.a} ${M2.b} ${M2.c} ${M2.d} ${M2.e} ${M2.f})` });
       pv.style.display = "";
     },
     /* a press: -> a gesture {move, end, cancel} like a creation tool's, or null when refused. o.first: the shape was just made empty for this press
@@ -2328,7 +2353,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
 
 // src/widgets/handle.js
 function handleWidget(ctx, specs, outline) {
-  const g = mk("g"), A2 = (e, o) => {
+  const g = mk("g"), A3 = (e, o) => {
     for (const k in o) e.setAttribute(k, o[k]);
   };
   ctx.overlay.append(g);
@@ -2350,8 +2375,8 @@ function handleWidget(ctx, specs, outline) {
     return { el, sp };
   });
   function layout() {
-    const M = ctx.matrix(), T = (p) => {
-      const q = new DOMPoint(p[0], p[1]).matrixTransform(M);
+    const M2 = ctx.matrix(), T = (p) => {
+      const q = new DOMPoint(p[0], p[1]).matrixTransform(M2);
       return [q.x, q.y];
     }, w = ctx.px(1.5);
     if (outline) {
@@ -2361,7 +2386,7 @@ function handleWidget(ctx, specs, outline) {
           ols[i] = mk("polygon", { fill: "none", stroke: "var(--acc,#2f6fed)" });
           g.insertBefore(ols[i], g.firstChild);
         }
-        A2(ols[i], { points: poly.map(T).join(" "), "stroke-width": w, "stroke-dasharray": i ? ctx.px(1.5) + " " + ctx.px(2.5) : ctx.px(5) + " " + ctx.px(3) });
+        A3(ols[i], { points: poly.map(T).join(" "), "stroke-width": w, "stroke-dasharray": i ? ctx.px(1.5) + " " + ctx.px(2.5) : ctx.px(5) + " " + ctx.px(3) });
       });
     }
     items.forEach(({ el, sp }) => {
@@ -2369,7 +2394,7 @@ function handleWidget(ctx, specs, outline) {
       el.style.cursor = lk ? "not-allowed" : "move";
       el.setAttribute("fill", lk ? "#ddd" : sp.sq ? "var(--panel,#fff)" : "var(--acc,#2f6fed)");
       el.setAttribute("stroke", lk ? "#888" : "var(--acc,#2f6fed)");
-      A2(el, sp.sq ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
+      A3(el, sp.sq ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
     });
   }
   ctx.on("view", () => !dead && layout());
@@ -2384,13 +2409,13 @@ function handleWidget(ctx, specs, outline) {
 // src/widgets/shapes.js
 Widgets.register((el) => el.tagName === "rect", (ctx) => {
   const el = ctx.el, rect = () => ({ x: num(el, "x"), y: num(el, "y"), w: num(el, "width"), h: num(el, "height") });
-  let A2, B, a0, b0, rr0, busy = false, w;
-  const fromAB = () => ({ x: Math.min(A2[0], B[0]), y: Math.min(A2[1], B[1]), w: Math.abs(A2[0] - B[0]), h: Math.abs(A2[1] - B[1]) });
+  let A3, B, a0, b0, rr0, busy = false, w;
+  const fromAB = () => ({ x: Math.min(A3[0], B[0]), y: Math.min(A3[1], B[1]), w: Math.abs(A3[0] - B[0]), h: Math.abs(A3[1] - B[1]) });
   const sync = () => {
     if (busy) return;
-    const r = rect(), q = A2 && fromAB();
+    const r = rect(), q = A3 && fromAB();
     if (!q || Math.abs(q.x - r.x) + Math.abs(q.y - r.y) + Math.abs(q.w - r.w) + Math.abs(q.h - r.h) > 2e-3) {
-      A2 = [r.x, r.y];
+      A3 = [r.x, r.y];
       B = [r.x + r.w, r.y + r.h];
     }
   };
@@ -2416,7 +2441,7 @@ Widgets.register((el) => el.tagName === "rect", (ctx) => {
   };
   const corner = () => {
     sync();
-    const r = rect(), ax = A2[0] <= B[0] ? 0 : 1, ay = A2[1] <= B[1] ? 0 : 1, fx = ay ? ax : 1 - ax;
+    const r = rect(), ax = A3[0] <= B[0] ? 0 : 1, ay = A3[1] <= B[1] ? 0 : 1, fx = ay ? ax : 1 - ax;
     return { cx: r.x + r.w * fx, cy: r.y, sx: fx ? -1 : 1 };
   };
   const node = (get, set) => ({ sq: 1, get: () => {
@@ -2424,15 +2449,15 @@ Widgets.register((el) => el.tagName === "rect", (ctx) => {
     return get();
   }, start: () => {
     sync();
-    a0 = [...A2];
+    a0 = [...A3];
     b0 = [...B];
   }, drag: (p, p0) => {
     set(p[0] - p0[0], p[1] - p0[1]);
     write();
   } });
   const specs = [
-    node(() => A2, (dx, dy) => {
-      A2 = [rnd(a0[0] + dx), rnd(a0[1] + dy)];
+    node(() => A3, (dx, dy) => {
+      A3 = [rnd(a0[0] + dx), rnd(a0[1] + dy)];
     }),
     node(() => B, (dx, dy) => {
       B = [rnd(b0[0] + dx), rnd(b0[1] + dy)];
@@ -2486,7 +2511,7 @@ Widgets.register((el) => el.tagName === "line", (ctx) => {
 
 // src/widgets/poly.js
 for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName === tag, (ctx) => {
-  const el = ctx.el, closed = tag === "polygon", g = mk("g"), A2 = (e, o) => {
+  const el = ctx.el, closed = tag === "polygon", g = mk("g"), A3 = (e, o) => {
     for (const k in o) e.setAttribute(k, o[k]);
   };
   ctx.overlay.append(g);
@@ -2543,8 +2568,8 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
     let best = null;
     const n = pts.length;
     for (let i = 0; i < (closed ? n : n - 1); i++) {
-      const a = pts[i], b = pts[(i + 1) % n], dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
-      const t = L ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L)) : 0;
+      const a = pts[i], b = pts[(i + 1) % n], dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+      const t = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
       const q = [a[0] + dx * t, a[1] + dy * t], d = Math.hypot(q[0] - p[0], q[1] - p[1]);
       if (!best || d < best.d) best = { d, i, q };
     }
@@ -2609,14 +2634,14 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
     layout();
   }
   function layout() {
-    const M = ctx.matrix(), T = (p) => {
-      const q = new DOMPoint(p[0], p[1]).matrixTransform(M);
+    const M2 = ctx.matrix(), T = (p) => {
+      const q = new DOMPoint(p[0], p[1]).matrixTransform(M2);
       return [q.x, q.y];
     }, w = ctx.px(1.5);
-    A2(hit, { points: pts.map((p) => p.join(",")).join(" "), transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
+    A3(hit, { points: pts.map((p) => p.join(",")).join(" "), transform: `matrix(${M2.a} ${M2.b} ${M2.c} ${M2.d} ${M2.e} ${M2.f})` });
     items.forEach((it) => {
       const [x, y] = T(it.get()), r = ctx.px(it.r);
-      A2(it.h, it.n ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
+      A3(it.h, it.n ? { x: x - r, y: y - r, width: 2 * r, height: 2 * r, "stroke-width": w } : { cx: x, cy: y, r, "stroke-width": w });
       const sl = S.has("node", it.node);
       if (it.pin) it.h.setAttribute("stroke", sl ? "var(--acc,#2f6fed)" : "#888");
       else it.h.setAttribute("fill", sl ? "var(--acc,#2f6fed)" : "var(--panel,#fff)");
@@ -2680,9 +2705,9 @@ for (const tag of ["polygon", "polyline"]) Widgets.register((el) => el.tagName =
         pv.style.display = "none";
         return;
       }
-      const q = ctx.fit(ctx.toLocal(e)), line = [pts[h], q], M = ctx.matrix();
+      const q = ctx.fit(ctx.toLocal(e)), line = [pts[h], q], M2 = ctx.matrix();
       if (closed && pts.length > 1) line.push(pts[(h + 1) % pts.length]);
-      A2(pv, { points: line.map((z) => z.join(",")).join(" "), transform: `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})` });
+      A3(pv, { points: line.map((z) => z.join(",")).join(" "), transform: `matrix(${M2.a} ${M2.b} ${M2.c} ${M2.d} ${M2.e} ${M2.f})` });
       pv.style.display = "";
     },
     /* a press: -> a gesture {move, end, cancel} like a creation tool's, or null when refused. o.first: the shape was just made for this press (its
@@ -2758,8 +2783,8 @@ Widgets.register(() => true, (ctx) => {
     } catch {
       return;
     }
-    const M = ctx.matrix(), pts = [[b.x, b.y], [b.x + b.width, b.y], [b.x + b.width, b.y + b.height], [b.x, b.y + b.height]].map(([x, y]) => {
-      const p = new DOMPoint(x, y).matrixTransform(M);
+    const M2 = ctx.matrix(), pts = [[b.x, b.y], [b.x + b.width, b.y], [b.x + b.width, b.y + b.height], [b.x, b.y + b.height]].map(([x, y]) => {
+      const p = new DOMPoint(x, y).matrixTransform(M2);
       return [p.x, p.y];
     });
     g.append(mk("polygon", { points: pts.join(" "), fill: "none", stroke: "var(--acc,#2f6fed)", "stroke-width": ctx.px(1.5), "stroke-dasharray": ctx.px(5) + " " + ctx.px(3) }));
@@ -2883,12 +2908,12 @@ var ownM = (el) => {
   return m;
 };
 function fmtTransform({ a, b, c, d, e, f: f2 }) {
-  const near2 = (x, y) => Math.abs(x - y) < 1e-7, r = (v) => +v.toFixed(6), q = (v) => +v.toFixed(3);
+  const near3 = (x, y) => Math.abs(x - y) < 1e-7, r = (v) => +v.toFixed(6), q = (v) => +v.toFixed(3);
   const tr = Math.abs(e) > 1e-9 || Math.abs(f2) > 1e-9 ? `translate(${q(e)} ${q(f2)})` : "";
   let rest = "";
-  if (near2(b, 0) && near2(c, 0)) {
-    if (!(near2(a, 1) && near2(d, 1))) rest = `scale(${r(a)}${near2(a, d) ? "" : " " + r(d)})`;
-  } else if (near2(a, d) && near2(b, -c) && near2(a * a + b * b, 1)) rest = `rotate(${+(Math.atan2(b, a) * 180 / Math.PI).toFixed(4)})`;
+  if (near3(b, 0) && near3(c, 0)) {
+    if (!(near3(a, 1) && near3(d, 1))) rest = `scale(${r(a)}${near3(a, d) ? "" : " " + r(d)})`;
+  } else if (near3(a, d) && near3(b, -c) && near3(a * a + b * b, 1)) rest = `rotate(${+(Math.atan2(b, a) * 180 / Math.PI).toFixed(4)})`;
   else return `matrix(${[a, b, c, d].map(r).join(" ")} ${q(e)} ${q(f2)})`;
   return [tr, rest].filter(Boolean).join(" ") || null;
 }
@@ -2915,7 +2940,7 @@ var cursor = (a) => ["ew", "nwse", "ns", "nesw"][Math.round((a % Math.PI + Math.
 var nz = (s) => Math.abs(s) < 1e-3 ? s < 0 ? -1e-3 : 1e-3 : s;
 var CAP = { sc: "transform.scale", sx: "transform.scale", sy: "transform.scale", rot: "transform.rotate", kx: "transform.skew", ky: "transform.skew" };
 function transformLayer(ctx, kind) {
-  const el = ctx.el, g = mk("g"), A2 = (e, o) => {
+  const el = ctx.el, g = mk("g"), A3 = (e, o) => {
     for (const k in o) e.setAttribute(k, o[k]);
   }, ol = mk("polygon", { fill: "none", stroke: ACC });
   g.append(ol);
@@ -2937,10 +2962,10 @@ function transformLayer(ctx, kind) {
   };
   const begin = {
     sc: (ix, iy) => (e) => {
-      const b = ctx.bbox(), hx = b.x + b.w * ix, hy = b.y + b.h * iy, ax = b.x + b.w * (1 - ix), ay = b.y + b.h * (1 - iy), vx = hx - ax, vy = hy - ay, L = vx * vx + vy * vy, S = frame(e, hx, hy);
+      const b = ctx.bbox(), hx = b.x + b.w * ix, hy = b.y + b.h * iy, ax = b.x + b.w * (1 - ix), ay = b.y + b.h * (1 - iy), vx = hx - ax, vy = hy - ay, L2 = vx * vx + vy * vy, S = frame(e, hx, hy);
       return { S, move: (ev) => {
-        if (L < 1e-12) return;
-        const p = S.at(ev), s = nz(((p[0] - ax) * vx + (p[1] - ay) * vy) / L);
+        if (L2 < 1e-12) return;
+        const p = S.at(ev), s = nz(((p[0] - ax) * vx + (p[1] - ay) * vy) / L2);
         put(S, "", `translate(${rnd(ax)} ${rnd(ay)}) scale(${r6(s)}) translate(${rnd(-ax)} ${rnd(-ay)})`);
       } };
     },
@@ -3015,26 +3040,26 @@ function transformLayer(ctx, kind) {
     const b = ctx.bbox();
     g.style.display = b ? "" : "none";
     if (!b) return;
-    const M = ctx.matrix(), T = (x, y) => {
-      const q = new DOMPoint(x, y).matrixTransform(M);
+    const M2 = ctx.matrix(), T = (x, y) => {
+      const q = new DOMPoint(x, y).matrixTransform(M2);
       return [q.x, q.y];
     }, C = T(b.x + b.w / 2, b.y + b.h / 2);
-    A2(ol, { points: [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]].map((p) => T(p[0], p[1])).join(" "), "stroke-width": ctx.px(1.5), "stroke-dasharray": ctx.px(5) + " " + ctx.px(3) });
+    A3(ol, { points: [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]].map((p) => T(p[0], p[1])).join(" "), "stroke-width": ctx.px(1.5), "stroke-dasharray": ctx.px(5) + " " + ctx.px(3) });
     specs.forEach((s) => {
       let [x, y] = T(b.x + b.w * s.ix, b.y + b.h * s.iy);
       const dx = s.ix - 0.5, dy = s.iy - 0.5, min = ctx.px(dx && dy ? 24 : 20);
       let vx = x - C[0], vy = y - C[1], d = Math.hypot(vx, vy);
       if (d < min) {
         if (d < 1e-6) {
-          vx = M.a * dx + M.c * dy;
-          vy = M.b * dx + M.d * dy;
+          vx = M2.a * dx + M2.c * dy;
+          vy = M2.b * dx + M2.d * dy;
           d = Math.hypot(vx, vy) || 1;
         }
         x = C[0] + vx / d * min;
         y = C[1] + vy / d * min;
       }
-      const v = s.role === "sc" || s.role === "rot" ? [x - C[0], y - C[1]] : s.role === "sx" || s.role === "kx" ? [M.a, M.b] : [M.c, M.d], a = Math.atan2(v[1], v[0]);
-      A2(s.g, { transform: `translate(${x} ${y}) rotate(${a * 180 / Math.PI}) scale(${ctx.px(1)})` });
+      const v = s.role === "sc" || s.role === "rot" ? [x - C[0], y - C[1]] : s.role === "sx" || s.role === "kx" ? [M2.a, M2.b] : [M2.c, M2.d], a = Math.atan2(v[1], v[0]);
+      A3(s.g, { transform: `translate(${x} ${y}) rotate(${a * 180 / Math.PI}) scale(${ctx.px(1)})` });
       s.g.style.cursor = s.role === "rot" ? "grab" : cursor(a);
       const e = 1e-9, live2 = { sc: b.w > e || b.h > e, sx: b.w > e, sy: b.h > e, rot: true, kx: b.h > e, ky: b.w > e }[s.role];
       s.g.style.display = live2 && ctx.can(CAP[s.role]) ? "" : "none";
@@ -3063,8 +3088,8 @@ function haloWidget(ctx) {
       const v = el.getAttribute(a);
       v === null ? h.removeAttribute(a) : h.setAttribute(a, v);
     });
-    const M = ctx.matrix();
-    h.setAttribute("transform", `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})`);
+    const M2 = ctx.matrix();
+    h.setAttribute("transform", `matrix(${M2.a} ${M2.b} ${M2.c} ${M2.d} ${M2.e} ${M2.f})`);
   }
   ctx.on("view", () => !dead && layout());
   ctx.on("change", () => !dead && layout());
@@ -3298,6 +3323,281 @@ function openMenu(items, x, y, onClose) {
   return ctl;
 }
 
+// src/convert.js
+var KINDS = ["path", "rect", "circle", "ellipse", "line", "polygon", "polyline"];
+var LABELS = { path: "Path", rect: "Rectangle", circle: "Circle", ellipse: "Ellipse", line: "Line", polygon: "Polygon", polyline: "Polyline" };
+var NUM3 = /[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
+var flt2 = (get, a) => {
+  const v = parseFloat(get(a));
+  return Number.isFinite(v) ? v : 0;
+};
+var points = (s) => {
+  const n = (s || "").match(NUM3) || [], p = [];
+  for (let i = 0; i + 1 < n.length; i += 2) p.push([+n[i], +n[i + 1]]);
+  return p;
+};
+var fmt = (pts) => pts.map((q) => rnd(q[0]) + "," + rnd(q[1])).join(" ");
+var near2 = (a, b, e = 1e-9) => Math.abs(a - b) <= e;
+var SLOP = 3e-3;
+function readShape(tag, get) {
+  switch (tag) {
+    case "rect": {
+      const x = flt2(get, "x"), y = flt2(get, "y"), w = flt2(get, "width"), h = flt2(get, "height");
+      if (!(w > 0 && h > 0)) return null;
+      const a = parseFloat(get("rx")), b = parseFloat(get("ry"));
+      let rx = a >= 0 ? a : b >= 0 ? b : 0, ry = b >= 0 ? b : a >= 0 ? a : 0;
+      rx = Math.min(rx, w / 2);
+      ry = Math.min(ry, h / 2);
+      if (!(rx > 0 && ry > 0)) rx = ry = 0;
+      return { t: "rect", x, y, w, h, rx, ry };
+    }
+    case "circle": {
+      const r = flt2(get, "r");
+      return r > 0 ? { t: "circle", cx: flt2(get, "cx"), cy: flt2(get, "cy"), r } : null;
+    }
+    case "ellipse": {
+      const a = parseFloat(get("rx")), b = parseFloat(get("ry")), rx = a >= 0 ? a : b, ry = b >= 0 ? b : a;
+      return rx > 0 && ry > 0 ? { t: "ellipse", cx: flt2(get, "cx"), cy: flt2(get, "cy"), rx, ry } : null;
+    }
+    case "line":
+      return { t: "line", p: [[flt2(get, "x1"), flt2(get, "y1")], [flt2(get, "x2"), flt2(get, "y2")]] };
+    case "polygon":
+    case "polyline": {
+      const pts = points(get("points"));
+      return pts.length >= 2 ? { t: tag, pts } : null;
+    }
+    case "path": {
+      const segs = parsePath(get("d") || "");
+      return segs.some((s) => s.t !== "M" && s.t !== "Z") ? { t: "path", segs } : null;
+    }
+  }
+  return null;
+}
+var M = (p) => ({ t: "M", pts: [[...p]] });
+var L = (p) => ({ t: "L", pts: [[...p]], dirty: 1 });
+var Z = () => ({ t: "Z", pts: [] });
+var A2 = (rx, ry, p) => ({ t: "A", arc: [rnd(rx), rnd(ry), 0, 0, 1], pts: [[...p]] });
+function toSegs(g, opts = {}) {
+  let segs;
+  switch (g.t) {
+    case "path":
+      return g.segs;
+    case "line":
+      segs = [M(g.p[0]), L(g.p[1])];
+      break;
+    case "polygon":
+    case "polyline":
+      segs = g.pts.map((p, i) => i ? L(p) : M(p));
+      if (g.t === "polygon") segs.push(Z());
+      break;
+    case "circle":
+    case "ellipse": {
+      const rx = g.t === "circle" ? g.r : g.rx, ry = g.t === "circle" ? g.r : g.ry, { cx, cy } = g;
+      segs = [M([cx + rx, cy]), A2(rx, ry, [cx, cy + ry]), A2(rx, ry, [cx - rx, cy]), A2(rx, ry, [cx, cy - ry]), A2(rx, ry, [cx + rx, cy]), Z()];
+      break;
+    }
+    case "rect": {
+      const { x, y, w, h, rx, ry } = g, r = x + w, b = y + h, round = rx > 0, S = [x + rx, y];
+      segs = [M(S)];
+      const line = (p) => {
+        const q = segs.at(-1).pts.at(-1);
+        if (Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-9) segs.push(L(p));
+      };
+      const arc = (p) => {
+        if (round) segs.push(A2(rx, ry, p));
+      };
+      line([r - rx, y]);
+      arc([r, y + ry]);
+      line([r, b - ry]);
+      arc([r - rx, b]);
+      line([x + rx, b]);
+      arc([x, b - ry]);
+      line([x, y + ry]);
+      if (!round) segs.pop();
+      else arc(S);
+      segs.push(Z());
+      break;
+    }
+    default:
+      return null;
+  }
+  retype(segs);
+  if (opts.arcs === false) {
+    const idx = segs.flatMap((s, i) => s.t === "A" ? [i] : []), c = idx.length && convertSegments(segs, idx, "C");
+    if (c) {
+      segs = c.segs;
+      retype(segs);
+    }
+  }
+  return segs;
+}
+var roots = (a, b, c) => {
+  if (Math.abs(a) < 1e-12) return Math.abs(b) < 1e-12 ? [] : [-c / b].filter((t) => t > 0 && t < 1);
+  const D = b * b - 4 * a * c;
+  if (D < 0) return [];
+  const s = Math.sqrt(D);
+  return [(-b + s) / (2 * a), (-b - s) / (2 * a)].filter((t) => t > 0 && t < 1);
+};
+function pathBox(segs) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const add = (p) => {
+    x0 = Math.min(x0, p[0]);
+    y0 = Math.min(y0, p[1]);
+    x1 = Math.max(x1, p[0]);
+    y1 = Math.max(y1, p[1]);
+  };
+  const info = segInfo(segs);
+  segs.forEach((s, i) => {
+    if (s.t === "M") return void add(s.pts[0]);
+    if (s.t === "Z" || !info[i].from) return;
+    const from = info[i].from, to = s.pts.at(-1);
+    add(to);
+    if (s.t === "Q" || s.t === "C") {
+      const P = [from, ...s.pts];
+      for (const k of [0, 1]) {
+        const p = P.map((q) => q[k]);
+        const t = s.t === "Q" ? roots(0, 2 * (p[0] - 2 * p[1] + p[2]), 2 * (p[1] - p[0])) : roots(-p[0] + 3 * p[1] - 3 * p[2] + p[3], 2 * (p[0] - 2 * p[1] + p[2]), p[1] - p[0]);
+        t.forEach((u) => add(dc(P, u)));
+      }
+    } else if (s.t === "A") {
+      const g = arcGeom(from, to, ...s.arc);
+      if (!g) return;
+      const sg = Math.sign(g.dth), cands = [Math.atan2(-g.ry * g.s, g.rx * g.c), Math.atan2(g.ry * g.c, g.rx * g.s)];
+      for (const a of cands) for (const th of [a, a + Math.PI]) {
+        const u = ((th - g.th1) * sg % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+        if (u <= Math.abs(g.dth)) add(g.pt(th));
+      }
+    }
+  });
+  return x0 === Infinity ? null : [x0, y0, x1, y1];
+}
+function flatten(segs, tol) {
+  if (segs.filter((s) => s.t === "M").length !== 1 || segs[0].t !== "M") return null;
+  const info = segInfo(segs), pts = [];
+  let closed = false, exact = true;
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i], from = info[i].from, to = s.pts.at(-1);
+    if (s.t === "M") {
+      pts.push([...to]);
+      continue;
+    }
+    if (s.t === "Z") {
+      closed = true;
+      continue;
+    }
+    if (closed) return null;
+    if (s.t === "L") {
+      pts.push([...to]);
+      continue;
+    }
+    exact = false;
+    if (s.t === "Q" || s.t === "C") {
+      const P = [from, ...s.pts];
+      let m = 0;
+      for (let k = 0; k + 2 < P.length; k++) m = Math.max(m, Math.hypot(P[k][0] - 2 * P[k + 1][0] + P[k + 2][0], P[k][1] - 2 * P[k + 1][1] + P[k + 2][1]));
+      const n = Math.max(1, Math.ceil(Math.sqrt((s.t === "Q" ? 0.25 : 0.75) * m / tol)));
+      for (let j = 1; j < n; j++) pts.push(dc(P, j / n));
+    } else {
+      const g = arcGeom(from, to, ...s.arc);
+      if (g) {
+        const r = Math.max(g.rx, g.ry), step = Math.min(2 * Math.acos(Math.max(-1, 1 - Math.min(1, tol / r))), Math.PI / 2), n = Math.max(1, Math.ceil(Math.abs(g.dth) / step));
+        for (let j = 1; j < n; j++) pts.push(g.pt(g.th1 + g.dth * j / n));
+      }
+    }
+    pts.push([...to]);
+  }
+  const looped = pts.length > 2 && near2(pts[0][0], pts.at(-1)[0], 1e-9) && near2(pts[0][1], pts.at(-1)[1], 1e-9);
+  return { pts, closed, looped, exact };
+}
+function detectRect(segs) {
+  const f2 = flatten(segs, 1);
+  if (!f2 || !f2.exact || !(f2.closed || f2.looped)) return null;
+  const pts = f2.looped ? f2.pts.slice(0, -1) : f2.pts;
+  if (pts.length !== 4) return null;
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (!(x1 - x0 > 0 && y1 - y0 > 0)) return null;
+  const bits = pts.map((p) => [near2(p[0], x0, 1e-9) ? 0 : near2(p[0], x1, 1e-9) ? 1 : -1, near2(p[1], y0, 1e-9) ? 0 : near2(p[1], y1, 1e-9) ? 1 : -1]);
+  if (bits.some((b) => b[0] < 0 || b[1] < 0) || new Set(bits.map((b) => b.join())).size !== 4) return null;
+  for (let i = 0; i < 4; i++) {
+    const a = bits[i], b = bits[(i + 1) % 4];
+    if (a[0] !== b[0] === (a[1] !== b[1])) return null;
+  }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+function detectEllipse(segs) {
+  const info = segInfo(segs);
+  let c = null, tot = 0, dir = 0, arcs = 0;
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    if (s.t === "M") {
+      if (i) return null;
+      continue;
+    }
+    if (s.t === "Z") continue;
+    if (s.t !== "A" || !info[i].from) return null;
+    const g = arcGeom(info[i].from, info[i].to, ...s.arc);
+    if (!g) return null;
+    let rx = g.rx, ry = g.ry;
+    if (Math.abs(Math.sin(g.phi)) < 1e-6) {
+    } else if (Math.abs(Math.cos(g.phi)) < 1e-6) [rx, ry] = [ry, rx];
+    else if (Math.abs(rx - ry) < SLOP) ry = rx;
+    else return null;
+    const e = { cx: g.cx, cy: g.cy, rx, ry };
+    if (c && !(near2(c.cx, e.cx, SLOP) && near2(c.cy, e.cy, SLOP) && near2(c.rx, e.rx, SLOP) && near2(c.ry, e.ry, SLOP))) return null;
+    c = c || e;
+    const sg = Math.sign(g.dth);
+    if (dir && sg !== dir) return null;
+    dir = sg;
+    tot += Math.abs(g.dth);
+    arcs++;
+  }
+  return arcs >= 2 && Math.abs(tot - 2 * Math.PI) < 5e-3 ? c : null;
+}
+var res = (tag, attrs, exact) => ({ tag, attrs: Object.fromEntries(Object.entries(attrs).filter(([, v]) => v !== void 0).map(([k, v]) => [k, typeof v === "number" ? String(rnd(v)) : v])), exact: !!exact });
+var rectRes = (x, y, w, h, rx, ry, exact) => res("rect", { x, y, width: w, height: h, rx: rx > 0 ? rx : void 0, ry: rx > 0 && !near2(rx, ry, 5e-4) ? ry : void 0 }, exact);
+var ellRes = (e, exact) => res("ellipse", { cx: e.cx, cy: e.cy, rx: e.rx, ry: e.ry }, exact);
+var circRes = (e, exact) => res("circle", { cx: e.cx, cy: e.cy, r: Math.sqrt(e.rx * e.ry) }, exact && near2(e.rx, e.ry, SLOP));
+function convertShape(tag, get, to, opts = {}) {
+  if (tag === to || !KINDS.includes(to)) return null;
+  const g = readShape(tag, get);
+  if (!g) return null;
+  if (to === "path") {
+    const s = toSegs(g, opts);
+    return s && res("path", { d: serPath(s) }, true);
+  }
+  if (g.t === "line" && to !== "polyline") return null;
+  const segs = toSegs(g, { ...opts, arcs: true }), box = pathBox(segs);
+  if (!box) return null;
+  const [x0, y0, x1, y1] = box, w = x1 - x0, h = y1 - y0;
+  if (to === "rect" || to === "ellipse" || to === "circle") {
+    if (!(w > 0 && h > 0)) return null;
+    const bb = { cx: x0 + w / 2, cy: y0 + h / 2, rx: w / 2, ry: h / 2 };
+    if (to === "rect") {
+      if (g.t === "circle" || g.t === "ellipse") return rectRes(x0, y0, w, h, bb.rx, bb.ry, true);
+      const r = detectRect(segs);
+      if (r) return rectRes(r.x, r.y, r.w, r.h, 0, 0, true);
+      return rectRes(x0, y0, w, h, 0, 0, false);
+    }
+    if (g.t === "circle") return to === "ellipse" ? ellRes({ cx: g.cx, cy: g.cy, rx: g.r, ry: g.r }, true) : null;
+    if (g.t === "ellipse") return circRes(g, true);
+    if (g.t === "rect") {
+      const full = g.rx >= g.w / 2 - 1e-9 && g.ry >= g.h / 2 - 1e-9;
+      return to === "ellipse" ? ellRes(bb, full) : circRes(bb, full);
+    }
+    const e = detectEllipse(segs);
+    return to === "ellipse" ? ellRes(e || bb, !!e) : circRes(e || bb, !!e);
+  }
+  const bx = Math.hypot(w, h), f2 = flatten(segs, opts.tol > 0 ? opts.tol : Math.max(1e-3, bx * 5e-4));
+  if (!f2) return null;
+  if (to === "line") return f2.pts.length === 2 && f2.exact ? res("line", { x1: f2.pts[0][0], y1: f2.pts[0][1], x2: f2.pts[1][0], y2: f2.pts[1][1] }, true) : null;
+  if (to === "polygon") {
+    const pts2 = f2.looped ? f2.pts.slice(0, -1) : f2.pts;
+    return pts2.length >= 3 ? res("polygon", { points: fmt(pts2) }, f2.exact && (f2.closed || f2.looped)) : null;
+  }
+  const pts = f2.closed && !f2.looped ? [...f2.pts, f2.pts[0]] : f2.pts;
+  return pts.length >= 2 ? res("polyline", { points: fmt(pts) }, f2.exact) : null;
+}
+
 // src/attach.js
 var MODES = ["scale", "rotate", "edit"];
 function attach(svg, opts = {}) {
@@ -3312,6 +3612,7 @@ function attach(svg, opts = {}) {
   }, emit = (e, d) => [...hs[e] || []].forEach((f2) => f2(d));
   if (opts.onSelect) on("select", opts.onSelect);
   if (opts.onCreate) on("create", (d) => opts.onCreate(d.el));
+  if (opts.onConvert) on("convert", (d) => opts.onConvert(d.el, d.from));
   if (opts.onChange) on("change", (d) => opts.onChange(d.el, d.attr, d.src));
   if (opts.onDenied) on("denied", (d) => opts.onDenied(d.el, d));
   let P = compilePolicy(opts.policy, { root }), lastDeny = "";
@@ -3406,11 +3707,28 @@ function attach(svg, opts = {}) {
       emit("remove", { el: i.el, src: "history" });
     }
   };
+  const stepSwap = (i, dir) => {
+    const gone = dir > 0 ? i.from : i.to, back = dir > 0 ? i.to : i.from;
+    if (!gone.parentNode) return;
+    const keep = sel === gone, edit = keep && cur() === "edit", pf = pref;
+    gone.parentNode.insertBefore(back, gone);
+    gone.remove();
+    emit("convert", { el: back, from: gone, src: "history" });
+    if (keep) carryMode(back, edit, pf);
+  };
+  const carryMode = (ne, edit, pf) => {
+    select(perms(ne).selectable ? ne : null);
+    if (sel !== ne) return;
+    if (tool !== "pointer" && !armedFor(sel)) setTool("pointer");
+    if (edit) api.edit();
+    else if (pf !== cur()) api.mode = pf;
+  };
   const step = (from, to, dir) => {
     const g = from.pop();
     if (!g) return;
     (dir > 0 ? g.items : [...g.items].reverse()).forEach((i) => {
       if (i.add) return stepAdd(i, dir);
+      if (i.swap) return stepSwap(i, dir);
       const v = dir > 0 ? i.nw : i.old;
       v === null ? i.el.removeAttribute(i.attr) : i.el.setAttribute(i.attr, v);
       emit("change", { el: i.el, attr: i.attr, src: "history" });
@@ -3479,11 +3797,11 @@ function attach(svg, opts = {}) {
     return MODES.filter((m) => modeOk(p, m) && (m !== "edit" || e && !e.generic));
   };
   const xmodes = (el) => modesFor(el).filter((m) => m !== "edit"), canEdit = (el) => modesFor(el).includes("edit");
-  const fitWith = (p, q, M) => {
+  const fitWith = (p, q, M2) => {
     let r = q;
     if (p.snap) r = [Math.round(r[0] / p.snap[0]) * p.snap[0], Math.round(r[1] / p.snap[1]) * p.snap[1]];
     if (p.bounds) {
-      const B = p.bounds, w = new DOMPoint(r[0], r[1]).matrixTransform(M), c = new DOMPoint(Math.min(B[2], Math.max(B[0], w.x)), Math.min(B[3], Math.max(B[1], w.y))).matrixTransform(M.inverse());
+      const B = p.bounds, w = new DOMPoint(r[0], r[1]).matrixTransform(M2), c = new DOMPoint(Math.min(B[2], Math.max(B[0], w.x)), Math.min(B[3], Math.max(B[1], w.y))).matrixTransform(M2.inverse());
       r = [c.x, c.y];
     }
     return r;
@@ -3806,9 +4124,56 @@ function attach(svg, opts = {}) {
     select(el);
     emit("create", { el, src: "tool" });
   }
+  const convOpts = (o) => ({ arcs: o.arcs, tol: o.tol });
+  function planConvert(el, to, o = {}, dry) {
+    if (!el || !el.parentNode || el === root || !KINDS.includes(to) || to === el.tagName) return null;
+    const get = (a) => el.getAttribute(a), r = convertShape(el.tagName, get, to, convOpts(o));
+    if (!r) return null;
+    const ne = mk(to), geo = GEO[el.tagName] || [];
+    for (const a of el.attributes) if (!geo.includes(a.name)) ne.setAttributeNS(a.namespaceURI, a.name, a.value);
+    el.parentNode.insertBefore(ne, el);
+    let vals = new Map(Object.entries(r.attrs)), no = null;
+    if (!o.force) {
+      if (!ne.matches(PRIM)) no = { cap: "select", reason: "capability" };
+      else if (P) {
+        const c = checkConvert(perms(el), perms(ne), { tagFrom: el.tagName, tagTo: to, get, attrs: r.attrs, env: {} });
+        c.ok ? vals = c.values : no = { cap: c.cap, reason: c.reason };
+      }
+    }
+    if (no || dry) {
+      ne.remove();
+      return { denied: no || void 0, exact: r.exact };
+    }
+    return { ne, vals, exact: r.exact };
+  }
+  function convertEl(el, to, o = {}) {
+    if (gesture) return null;
+    const p = planConvert(el, to, o);
+    if (!p) return null;
+    if (p.denied) {
+      emit("denied", { el, attr: null, cap: p.denied.cap, reason: p.denied.reason, src: o.src || "app" });
+      return null;
+    }
+    const { ne } = p, keep = sel === el, edit = keep && cur() === "edit", pf = pref;
+    p.vals.forEach((v, a) => ne.setAttribute(a, v));
+    el.remove();
+    undoS.push({ key: "convert:" + ++gid, t: Date.now(), items: [{ swap: 1, from: el, to: ne }] });
+    redoS.length = 0;
+    emit("history");
+    emit("convert", { el: ne, from: el, src: o.src || "app", exact: p.exact });
+    if (keep) carryMode(ne, edit, pf);
+    return ne;
+  }
+  function convertTargets(el = sel, o = {}) {
+    if (!el || !el.parentNode || el === root || !perms(el).selectable) return [];
+    return KINDS.flatMap((k) => {
+      const p = planConvert(el, k, o, true);
+      return p ? [{ tag: k, label: LABELS[k], exact: p.exact, allowed: !p.denied }] : [];
+    });
+  }
   const strokeHit = (t, e) => {
     try {
-      const M = matrixFor(t), q = new DOMPoint(e.clientX, e.clientY).matrixTransform(ov.getScreenCTM().inverse()).matrixTransform(M.inverse()), r = 6 / scale() / (Math.hypot(M.a, M.b) || 1);
+      const M2 = matrixFor(t), q = new DOMPoint(e.clientX, e.clientY).matrixTransform(ov.getScreenCTM().inverse()).matrixTransform(M2.inverse()), r = 6 / scale() / (Math.hypot(M2.a, M2.b) || 1);
       return [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r], [r, r], [-r, -r], [r, -r], [-r, r]].some(([dx, dy]) => t.isPointInStroke(new DOMPoint(q.x + dx, q.y + dy)));
     } catch {
       return false;
@@ -3826,8 +4191,8 @@ function attach(svg, opts = {}) {
       return;
     }
     if (tool === "pointer" || e.button !== 0 || gesture) return;
-    const T = Tools.get(tool), host = hostEl(), M = host.getScreenCTM();
-    if (!T || !M) return;
+    const T = Tools.get(tool), host = hostEl(), M2 = host.getScreenCTM();
+    if (!T || !M2) return;
     if (ov.contains(e.target) && !(e.altKey && T.pen && e.target.getAttribute?.("data-sable") === "hit")) return;
     const t = editPick(T, e);
     if (t) {
@@ -3841,7 +4206,7 @@ function attach(svg, opts = {}) {
     }
     e.preventDefault();
     e.stopPropagation();
-    const inv2 = M.inverse(), sc = Math.hypot(M.a, M.b) || 1, made = [], id = e.pointerId, g = { dead: false };
+    const inv2 = M2.inverse(), sc = Math.hypot(M2.a, M2.b) || 1, made = [], id = e.pointerId, g = { dead: false };
     const probe = mk(T.tag || "g", { ...shapeAttrs() });
     host.insertBefore(probe, host === ov.parentNode ? ov : null);
     const pm = perms(probe);
@@ -3938,6 +4303,16 @@ function attach(svg, opts = {}) {
     ] : [], { label: "Finish " + T.label.toLowerCase(), action: penFinish }];
   };
   menuB.push(penItems);
+  const convertItems = ({ shape }) => {
+    if (!shape || gesture) return [];
+    const T = convertTargets(shape);
+    if (!T.some((t) => t.allowed)) return [];
+    return [{ label: "Convert to", submenu: T.map((t) => ({ label: t.label + (t.exact ? "" : " (approx.)"), disabled: !t.allowed, action: () => {
+      const n = convertEl(shape, t.tag, { src: "menu" });
+      if (n && sel !== n) select(n);
+    } })) }];
+  };
+  menuB.push(convertItems);
   const onPenHover = (e) => {
     const T = Tools.get(tool);
     if (!T || gesture || e.pointerType === "touch") return;
@@ -3957,10 +4332,10 @@ function attach(svg, opts = {}) {
     menuCtl && menuCtl.close();
     menuCtl = null;
   };
-  function openMenu2(x, y, target = null) {
+  function openMenu2(x, y, target = null, shape = target) {
     const items = [];
     menuB.forEach((f2) => {
-      const l = f2({ x, y, target, editor: api }) || [];
+      const l = f2({ x, y, target, shape, editor: api }) || [];
       if (l.length) {
         items.length && items.push({ sep: 1 });
         items.push(...l);
@@ -3984,8 +4359,8 @@ function attach(svg, opts = {}) {
       return;
     }
     if (opts.menu === false || gesture) return;
-    const t = ov.contains(e.target) ? null : e.target.closest?.(PRIM);
-    if (openMenu2(e.clientX, e.clientY, t && root.contains(t) ? t : null)) e.preventDefault();
+    const own = ov.contains(e.target), t = own ? null : e.target.closest?.(PRIM), tt = t && root.contains(t) ? t : null;
+    if (openMenu2(e.clientX, e.clientY, tt, own ? sel : tt)) e.preventDefault();
   };
   svg.addEventListener("pointerdown", toolDown, true);
   svg.addEventListener("contextmenu", onCtx);
@@ -4095,6 +4470,19 @@ function attach(svg, opts = {}) {
       return Tools.list.filter((d) => armable(d.id)).map(({ id, label }) => ({ id, label, create: toolOk(id) }));
     },
     // create: false = it can only edit the shapes of its kind
+    /* convert([el,] tag[, {arcs, tol, force}]) -> the new element (the selection and its mode carry over) or null; convertTargets([el]) lists what is on offer;
+       canConvert([el,] tag) says whether the policy lets it. See 'Converting shapes' in src/convert.js for what each conversion does. */
+    convert(a, b, c) {
+      const s = typeof a === "string";
+      return convertEl(s ? sel : a, s ? a : b, (s ? b : c) || {});
+    },
+    convertTargets(el = sel, o) {
+      return convertTargets(el, o || {});
+    },
+    canConvert(a, b) {
+      const s = typeof a === "string", el = s ? sel : a;
+      return !!el && convertTargets(el).some((t) => t.tag === (s ? a : b) && t.allowed);
+    },
     openMenu: openMenu2,
     closeMenu,
     addMenu(f2) {

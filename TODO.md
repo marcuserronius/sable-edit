@@ -83,25 +83,26 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
       arc case is), and the arc only looks at the segment before it
     - Arc to cubic/quadratic can add nodes (an arc of more than a quarter turn
       becomes several curves), so it needs nodes.insert
-- Implement conversion of objects to other types
-  - Simple: rect, circle, ellipse, polyline, polygon => path
-    - Just convert directly, using best options for straight lines and curves
-  - Obvious choices to get close for other conversions:
-    - ellipse to rect: round the corners
-    - rect to ellipse: w/h => xr/yr (divided by 2, of course)
-    - rect, ellipse to circle: Equal area? Average w/h or xr/yr?
-    - path to polygon/polyline: 
-  - Difficult conversions: do we even bother?
-    - paths/polylines/polygons to circle/ellipse/rect
-      - Maybe differentiate between converting and restructuring (better terms?)
-        - One takes a simplistic view, and makes a new shape with approximately 
-          the same dimensions, only exact for types that always directly 
-          convert, like rect => path; where path => rect just makes rect with 
-          the bounds of the original path
-        - The other makes an attempt at precision: a path that is close to a 
-          rect gets converted heuristically, and applies transforms like 
-          rotate, scale, and skew to make it as close as possible
-          - This is significantly harder work, so it can be a far future option
+- DONE: conversion of objects to other types (`src/convert.js`; right-click > Convert to, `ed.convert()`)
+  - Every shape (line too) => path, always exact: lines become H/V/L, circles and ellipses four quarter arcs (`arcs:false` gives cubics),
+    rounded rect corners arcs. Arcs rather than cubics because they are exact and the path editor already handles them.
+  - Plan changes: ellipse => rect needed no corner guessing: a rect with rx = w/2, ry = h/2 IS the ellipse, so it is exact (and rect =>
+    ellipse is exact exactly when the corners are fully round). rect/ellipse => circle keeps the AREA (r = sqrt(rx * ry)): it is
+    symmetric in the two radii and a square stays a square's circle. polygon <=> polyline, path => polygon/polyline (curves flattened
+    within a tolerance that scales with the shape), path/polyline/polygon => line (only when it already is one segment), and any
+    shape => polygon/polyline went in as well, all through the path as the pivot.
+  - Where the geometry really is the target it is recognised, so these are exact and round-trip: a path that is an axis-aligned
+    rectangle => rect, a path of arcs once round one centre => ellipse / circle. Everything else is the simplistic bounding-box
+    version, marked "(approx.)" in the menu.
+  - A new tag is a new element: built beside the old, judged by the policy in its place (new capability element.convert, in 'all';
+    `checkConvert()` in `src/policy.js`), then swapped, as one undo step with a 'convert' event. The selection and its mode carry over.
+  - Not done / ideas:
+    - The "restructuring" version: rounded rects (L A L A ... Z) back into rect with radii, rotated / skewed rectangles and ellipses
+      recognised by adding a `transform` (needs the policy's transform.* too), regular polygons, circles from many-sided polygons.
+    - Convert for touch (a long press is edit mode; ed.convert() / convertTargets() are there for a host's own button).
+    - Several subpaths => polygon/polyline is refused (they hold one outline); splitting into several elements needs the
+      element creation work above.
+    - Convert a whole multi-selection once there is one. Style set through CSS geometry properties (r, rx, d...) is not looked at.
 - Implement low-level and numeric editing
   - Some of this might be blocked by the "security" policies
   - Direct changing of derived numeric values like height, width, position, etc

@@ -3,7 +3,7 @@
   Options: root (limit editable subtree), overlay (existing <g> to draw handles in), mode ('scale'|'rotate'|'edit', default 'scale'),
            pick (default true: press an element to select it, click empty space to deselect),
            selector (editable elements, default basic shapes + path + text),
-           onSelect(el), onChange(el, attr, src), onCreate(el),
+           onSelect(el), onChange(el, attr, src), onCreate(el), onConvert(el, from),
            createIn (element or selector: where new shapes go, default root), shapeAttrs (attributes for new shapes, default a light
            fill + 2px stroke; if you pass `selector`, include something in shapeAttrs that matches it, e.g. {class:'edit'}),
            menu (default true: right-click / Ctrl-click opens the context menu; false leaves the browser's menu alone),
@@ -25,14 +25,24 @@
             (Delete / Backspace / Escape do the same while the page has focus, unless keys:false; the 'key' event lets an editor claim them),
             tool (get/set: 'pointer' or a tool id, stays until changed), tools (what is registered),
             penSegment (get/set what the path pen's next node adds: 'auto' | 'L' | 'Q' | 'C' | 'A'),
-            openMenu(x,y), closeMenu(), addMenu(({x,y,target,editor}) => [items]) (returns a remover),
-            on('select'|'change'|'history'|'mode'|'tool'|'pen'|'create'|'remove'|'denied', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
+            convert([el,] tag[, {arcs, tol, force}]) (change a shape into another kind: 'path'|'rect'|'circle'|'ellipse'|'line'|'polygon'|'polyline'; returns the new
+            element, or null if there is no such conversion or the policy refused (force:true skips it). A new tag is a new element: built beside the old,
+            same attributes, new geometry, one undo step; the selection and its mode carry over; the 'convert' event ({el, from, src}) / onConvert(el, from)
+            tell the host the old element is gone), convertTargets([el]) ([{tag, label, exact, allowed}]: what is on offer; exact = same outline, else an
+            approximation), canConvert([el,] tag) (src/convert.js: every shape -> path exactly (lines H/V/L, circle / ellipse four arcs, arcs:false = cubics);
+            a path that is an axis-aligned rectangle -> rect, arcs once round one centre -> ellipse / circle; a fully rounded rect IS an ellipse; rect / circle /
+            ellipse / path / polygon -> circle keeps the area, r = sqrt(rx*ry); path / polygon -> rect / ellipse that is not one is its bounding box (approx);
+            curves -> polygon / polyline are flattened within tol; polygon <-> polyline keeps the closing edge; a one-segment shape -> line),
+            openMenu(x,y), closeMenu(), addMenu(({x,y,target,shape,editor}) => [items]) (shape: the shape under the pointer, the selected one for its handles; returns a remover),
+            on('select'|'change'|'history'|'mode'|'tool'|'pen'|'create'|'remove'|'convert'|'denied', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
   Permissions: policy is a list of rules, applied in order; nothing is allowed until a rule grants it, and a shape nothing is granted to
     can't be selected (so {select:'.edit', can:'all'} is the old 'these shapes are editable'). Pass {rules:[...], create:false|[tool ids]} (create = which tools may DRAW new shapes; a tool still arms to edit the shapes of its kind that the rules allow, ed.tools[i].create says which)
     to also limit which creation tools the menu offers. A rule is {select, can, cannot, attrs, pin, bounds, ranges, snap}:
       select  CSS selector | (el)=>bool | element | array of those (omitted = every shape)
       can / cannot  capabilities: transform.move|scale|rotate|skew, geometry.edit (the edit mode), nodes.insert|delete (need geometry.edit),
-              attrs.edit (every other attribute: fill, stroke, style, class...); 'all' and 'group.*' work. Within a rule cannot wins; a later rule wins.
+              attrs.edit (every other attribute: fill, stroke, style, class...), element.convert (change the shape into another kind: right-click > Convert to, ed.convert();
+              needs geometry.edit; the new element is judged by the rules that select it, must stay selectable with geometry.edit, a pin on either side refuses,
+              ranges clamp, bounds may not be exceeded further than before, snap isn't applied); 'all', 'element.*' and 'group.*' work. Within a rule cannot wins; a later rule wins.
       attrs   {allow:[globs], deny:[globs]} narrows attrs.edit; 'stroke*' blocks the attribute and style="stroke..." alike
       pin     'endpoints' (first/last node of an open path/polyline; both ends of a line) and/or node indices (negative = from the end);
               a pinned node can't move or be deleted (its bezier handles stay free). Any pin turns the shape's transform.* off, and an index pin
@@ -72,7 +82,7 @@
     Every write goes through the policy (widgets, move/scale/rotate gestures, ed.set), so it holds even for edits that don't come from a handle.
     It guards the user, not the page: script that can reach the DOM can still write attributes. For a real guarantee, run checkWrite() from
     src/policy.js (pure, works in Node) on the server. Mistakes in a policy (unknown capability, rule key typo) throw at attach time.
-  Context menu: right-click (Ctrl-click on a Mac) anywhere on the canvas. 'Switch Tool' keeps the tool until you pick Pointer (or press Esc);
+  Context menu: right-click (Ctrl-click on a Mac) anywhere on the canvas; on a shape (or the selected shape's handles) there is Convert to > Path / Rectangle / ... (approximations say so). 'Switch Tool' keeps the tool until you pick Pointer (or press Esc);
     with the pen armed it also has Next segment, Close path and Finish path. Items are {label, action, checked, disabled, submenu:[...]} or {sep:1}.
   Tools:    the pointer tool is the editing behaviour described below; other tools create shapes. Built in: circle (press = centre, drag = radius),
             rect (press = one corner, release = the opposite corner, any direction), ellipse (the same two corners, of its bounding box),

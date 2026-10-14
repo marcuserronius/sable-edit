@@ -47,7 +47,7 @@ test('rules apply in order: later can/cannot override earlier; within one rule c
     { select: '.a', can: 'transform.move' },
     { select: '.a', can: ['nodes.insert'], cannot: ['nodes.insert'] },
   ]);
-  assert.deepEqual(caps(pol.resolve(e)), ['attrs.edit', 'geometry.edit', 'nodes.delete', 'transform.move']);
+  assert.deepEqual(caps(pol.resolve(e)), ['attrs.edit', 'element.convert', 'geometry.edit', 'nodes.delete', 'transform.move']);
 });
 
 test('select accepts a selector, a function, an element, or a list of them', () => {
@@ -206,7 +206,7 @@ test('pinned endpoints: deleting an endpoint is refused even where nodes.delete 
 
 test('pinned: transforms are switched off', () => {
   const e = el('path', { d: 'M0 0 L 10 10 L 20 0' });
-  assert.deepEqual(caps(PIN.resolve(e)), ['attrs.edit', 'geometry.edit', 'nodes.delete', 'nodes.insert']);
+  assert.deepEqual(caps(PIN.resolve(e)), ['attrs.edit', 'element.convert', 'geometry.edit', 'nodes.delete', 'nodes.insert']);
   assert.equal(write(PIN, e, 'transform', 'translate(5 5)', 'transform.move').ok, false);
   assert.equal(modeOk(PIN.resolve(e), 'scale'), false);
   assert.equal(modeOk(PIN.resolve(e), 'edit'), true);
@@ -215,7 +215,7 @@ test('pinned: transforms are switched off', () => {
 test('pinned by index: nodes.insert and nodes.delete are switched off too (indices would shift)', () => {
   const pol = compilePolicy([{ can: 'all', pin: [0, -1] }]);
   const e = el('polyline', { points: '0,0 10,10 20,0' });
-  assert.deepEqual(caps(pol.resolve(e)), ['attrs.edit', 'geometry.edit']);
+  assert.deepEqual(caps(pol.resolve(e)), ['attrs.edit', 'element.convert', 'geometry.edit']);
   assert.equal(write(pol, e, 'points', '0,0 10,15 20,0').ok, true);
   assert.equal(write(pol, e, 'points', '0,0 20,0').reason, 'capability');
   assert.equal(write(pol, e, 'points', '1,0 10,10 20,0').reason, 'pinned');
