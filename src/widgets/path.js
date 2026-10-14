@@ -71,7 +71,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     }
     let refs=[],rel=()=>{},wasHead=false;
     bind(h,(p0,e)=>{ // a node carries its adjacent bezier handles along, and so does every other selected node
-      if(ctx.penOn){ // pen: the other end of the path being drawn closes it; the end node itself, clicked, finishes
+      if(ctx.penOn&&drawM!==null){ // pen, drawing (a node was added since): the other end of the path being drawn closes it; the end node itself, clicked, finishes
         const v=view();wasHead=head()===i;
         if(v&&!wasHead&&canClose(v.segs,v.head)&&subOf(v.segs,v.head).m===v.map(i)&&allowed()){closeGesture(e,v);return}
       }
@@ -84,7 +84,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
       refs=refs.map(([q,k])=>[q,k,[...q.pts[k]]]);
     },(p,p0)=>{const dx=p[0]-p0[0],dy=p[1]-p0[1];refs.forEach(([q,k,o])=>q.pts[k]=[o[0]+dx,o[1]+dy])},()=>{rel();layout();if(wasHead&&ctx.penOn)ctx.penFinish()});
     h.addEventListener('dblclick',e=>{
-      e.stopPropagation(); if(mv0||mv1||ctx.penOn)return; // (with the pen armed a double-click on its end node is just two clicks: add, then finish)
+      e.stopPropagation(); if(mv0||mv1||(ctx.penOn&&ctx.penRecent()))return; // (a double-click on the node the pen has just added is two clicks: add, then finish)
       S.pick('node',i);del();
     });
   }
@@ -139,7 +139,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     healSmooth(segs);S.keep('node',i=>segs[i]&&segs[i].t!=='Z');S.keep('seg',i=>segs[i]&&segs[i].t!=='M'); // an undo or an outside edit may have renumbered things
     tw=twins(segs);
     if(S.kind==='node'&&S.items.some(j=>tw[j]>=0&&tw[j]<j)){const k=[...new Set(S.items.map(j=>tw[j]>=0&&tw[j]<j?tw[j]:j))];S.clear();k.forEach(j=>S.pick('node',j,true))} // a joined node is selected by its first half
-    hit=mk('path',{fill:'none',stroke:'transparent','stroke-width':12,'vector-effect':'non-scaling-stroke',style:'pointer-events:stroke;cursor:'+(ctx.can('nodes.insert')?'copy':'move')});
+    hit=mk('path',{'data-sable':'hit',fill:'none',stroke:'transparent','stroke-width':12,'vector-effect':'non-scaling-stroke',style:'pointer-events:stroke;cursor:'+(ctx.can('nodes.insert')?'copy':'move')});
     hit.addEventListener('dblclick',e=>ctx.can('nodes.insert')&&insert(ctx.toLocal(e)));
     /* stroke press: drag moves the path; a click selects the segment under it (Shift adds / removes it). Clicking the one selected segment
        again clears it, unless that is the second click of a double-click, which goes on to add a node. */
@@ -302,7 +302,8 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
   ctx.on('view',()=>!dead&&layout());
   ctx.on('key',d=>{ // Escape clears the selection, Delete / Backspace remove it (see del)
     if(dead||d.handled||!S.size)return;
-    if(d.key==='Escape'){if(ctx.penOn)return;S.clear();layout();d.handled=true}else if(d.key==='Delete'||d.key==='Backspace'){del();d.handled=true}
+    // (drawing: Escape leaves the pen at once; just editing: it clears the node selection first)
+    if(d.key==='Escape'){if(ctx.penOn&&drawM!==null)return;S.clear();layout();d.handled=true}else if(d.key==='Delete'||d.key==='Backspace'){del();d.handled=true}
   });
   ctx.on('change',({el:e,src})=>{if(dead||e!==el||src==='widget')return;segs=parsePath(el.getAttribute('d')||'');build();if(ctx.penOn)restoreHead()});
   build();

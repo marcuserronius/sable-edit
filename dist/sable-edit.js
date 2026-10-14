@@ -23,12 +23,12 @@
             edit mode: double-click / long-press a shape, or ed.edit(); Esc = back to scale, then deselect; ed.mode='edit' still works
             path segments: right-click > Segment type (L / Q / C / A); lines the editor touches are written H / V / L, shortest first
             (Delete / Backspace / Escape do the same while the page has focus, unless keys:false; the 'key' event lets an editor claim them),
-            tool (get/set: 'pointer' or a tool id, stays until changed), useTool(id) (same as tool=: 'use once' is switched off, see ONCE in attach.js), tools (what is registered),
+            tool (get/set: 'pointer' or a tool id, stays until changed), tools (what is registered),
             penSegment (get/set what the path pen's next node adds: 'auto' | 'L' | 'Q' | 'C' | 'A'),
             openMenu(x,y), closeMenu(), addMenu(({x,y,target,editor}) => [items]) (returns a remover),
             on('select'|'change'|'history'|'mode'|'tool'|'pen'|'create'|'remove'|'denied', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
   Permissions: policy is a list of rules, applied in order; nothing is allowed until a rule grants it, and a shape nothing is granted to
-    can't be selected (so {select:'.edit', can:'all'} is the old 'these shapes are editable'). Pass {rules:[...], create:false|[tool ids]}
+    can't be selected (so {select:'.edit', can:'all'} is the old 'these shapes are editable'). Pass {rules:[...], create:false|[tool ids]} (create = which tools may DRAW new shapes; a tool still arms to edit the shapes of its kind that the rules allow, ed.tools[i].create says which)
     to also limit which creation tools the menu offers. A rule is {select, can, cannot, attrs, pin, bounds, ranges, snap}:
       select  CSS selector | (el)=>bool | element | array of those (omitted = every shape)
       can / cannot  capabilities: transform.move|scale|rotate|skew, geometry.edit (the edit mode), nodes.insert|delete (need geometry.edit),
@@ -78,7 +78,11 @@
             rect (press = one corner, release = the opposite corner, any direction), ellipse (the same two corners, of its bounding box),
             line (press = start point, release = end point), path, polygon, polyline (the pens, below).
             A tool is armed -> every press is its gesture (nothing is selected, handles stay out of the way); Esc cancels a drag.
-            A created shape is one undo step; the tool stays armed with nothing selected (every tool is sticky: 'use once' is switched off).
+            A created shape is one undo step, and is selected in edit mode with its tool still armed (every tool is sticky). An armed tool is the edit mode of its
+            own kind of shape: arming keeps a selected shape of that kind; a press on one edits it (rect/circle/ellipse/line: its body; path/polygon/polyline:
+            its stroke, the fill starts a new one; Alt = draw a new one regardless); anywhere else draws. A tool def says {tag: the element it draws and edits}. A double-click / long press / ed.edit() / ed.mode='edit' arms a shape's
+            own tool (edit mode and the tool are one state; ed.mode='scale'|'rotate' or Esc leave it). A click that draws nothing selects a shape of another kind
+            (and leaves the tool) or deselects on empty canvas. The points a creation tool is given are snapped and kept inside the policy's bounds.
             Path pen: the path editor with the pen on, so the selected path keeps its handles. The pen continues from the selected node of the selected
             path if that node is an endpoint (a first node reverses the path), else a press starts a new path. Press = add a node (line), press-drag = pull
             handles (symmetric node, S form; Alt = break), press the other end of the path (2+ nodes) = close, a drag on that press shapes the closing segment. Click the end node again, double-click it, Enter
@@ -1831,7 +1835,7 @@ var SableEdit = (() => {
       let refs = [], rel = () => {
       }, wasHead = false;
       bind(h, (p0, e) => {
-        if (ctx.penOn) {
+        if (ctx.penOn && drawM !== null) {
           const v = view();
           wasHead = head() === i;
           if (v && !wasHead && canClose(v.segs, v.head) && subOf(v.segs, v.head).m === v.map(i) && allowed()) {
@@ -1863,7 +1867,7 @@ var SableEdit = (() => {
       });
       h.addEventListener("dblclick", (e) => {
         e.stopPropagation();
-        if (mv0 || mv1 || ctx.penOn) return;
+        if (mv0 || mv1 || ctx.penOn && ctx.penRecent()) return;
         S.pick("node", i);
         del();
       });
@@ -1983,7 +1987,7 @@ var SableEdit = (() => {
         S.clear();
         k.forEach((j) => S.pick("node", j, true));
       }
-      hit = mk("path", { fill: "none", stroke: "transparent", "stroke-width": 12, "vector-effect": "non-scaling-stroke", style: "pointer-events:stroke;cursor:" + (ctx.can("nodes.insert") ? "copy" : "move") });
+      hit = mk("path", { "data-sable": "hit", fill: "none", stroke: "transparent", "stroke-width": 12, "vector-effect": "non-scaling-stroke", style: "pointer-events:stroke;cursor:" + (ctx.can("nodes.insert") ? "copy" : "move") });
       hit.addEventListener("dblclick", (e) => ctx.can("nodes.insert") && insert(ctx.toLocal(e)));
       hit.addEventListener("pointerdown", (e) => {
         const k = nearestSeg(segs, ctx.toLocal(e)), i = k ? k.i : -1, add = e.shiftKey;
@@ -2311,7 +2315,7 @@ var SableEdit = (() => {
     ctx.on("key", (d) => {
       if (dead || d.handled || !S.size) return;
       if (d.key === "Escape") {
-        if (ctx.penOn) return;
+        if (ctx.penOn && drawM !== null) return;
         S.clear();
         layout();
         d.handled = true;
@@ -2579,7 +2583,7 @@ var SableEdit = (() => {
     function build() {
       g.replaceChildren();
       items = [];
-      hit = mk(tag, { fill: "none", stroke: "transparent", "stroke-width": 12, "vector-effect": "non-scaling-stroke", style: "pointer-events:stroke;cursor:" + (ctx.can("nodes.insert") ? "copy" : "move") });
+      hit = mk(tag, { "data-sable": "hit", fill: "none", stroke: "transparent", "stroke-width": 12, "vector-effect": "non-scaling-stroke", style: "pointer-events:stroke;cursor:" + (ctx.can("nodes.insert") ? "copy" : "move") });
       hit.addEventListener("dblclick", (e) => ctx.can("nodes.insert") && insert(ctx.toLocal(e)));
       hit.addEventListener("pointerdown", (e) => ctx.grab(e));
       g.append(hit);
@@ -2606,7 +2610,7 @@ var SableEdit = (() => {
         drag(
           h,
           (e) => {
-            wasHead = ctx.penOn && head() === i;
+            wasHead = ctx.penOn && drawing && head() === i;
             rel = S.press("node", i, e.shiftKey);
             layout();
             refs = S.items.filter((j) => pts[j] && !pinned.has(j)).map((j) => [j, [...pts[j]]]);
@@ -2623,7 +2627,7 @@ var SableEdit = (() => {
         );
         h.addEventListener("dblclick", (e) => {
           e.stopPropagation();
-          if (mv0 || mv1 || ctx.penOn) return;
+          if (mv0 || mv1 || ctx.penOn && ctx.penRecent()) return;
           S.pick("node", i);
           del();
         });
@@ -2648,7 +2652,7 @@ var SableEdit = (() => {
     ctx.on("key", (d) => {
       if (dead || d.handled || !S.size) return;
       if (d.key === "Escape") {
-        if (ctx.penOn) return;
+        if (ctx.penOn && drawing) return;
         S.clear();
         layout();
         d.handled = true;
@@ -2808,19 +2812,20 @@ var SableEdit = (() => {
   };
 
   // src/tools/circle.js
-  var circleFrom = (c, p, min = 0) => {
-    const r = Math.hypot(p[0] - c[0], p[1] - c[1]);
+  var circleFrom = (c, p, min = 0, B = null) => {
+    let r = Math.hypot(p[0] - c[0], p[1] - c[1]);
+    if (B) r = Math.min(r, c[0] - B[0], B[2] - c[0], c[1] - B[1], B[3] - c[1]);
     return r > min ? { cx: rnd(c[0]), cy: rnd(c[1]), r: rnd(r) } : null;
   };
-  Tools.register({ id: "circle", label: "Circle", cursor: "crosshair", begin(t, p0) {
+  Tools.register({ id: "circle", label: "Circle", cursor: "crosshair", tag: "circle", begin(t, p0) {
     const el = t.make("circle", { cx: rnd(p0[0]), cy: rnd(p0[1]), r: 0 }), put = (c) => {
       for (const k in c) el.setAttribute(k, c[k]);
     };
     return { move: (p) => {
-      const c = circleFrom(p0, p);
+      const c = circleFrom(p0, p, 0, t.bounds);
       c && put(c);
     }, end: (p) => {
-      const c = circleFrom(p0, p, t.px(2));
+      const c = circleFrom(p0, p, t.px(2), t.bounds);
       if (!c) return null;
       put(c);
       return el;
@@ -2832,7 +2837,7 @@ var SableEdit = (() => {
     const w = Math.abs(b[0] - a[0]), h = Math.abs(b[1] - a[1]);
     return w > min && h > min ? { x: rnd(Math.min(a[0], b[0])), y: rnd(Math.min(a[1], b[1])), width: rnd(w), height: rnd(h) } : null;
   };
-  Tools.register({ id: "rect", label: "Rectangle", cursor: "crosshair", begin(t, p0) {
+  Tools.register({ id: "rect", label: "Rectangle", cursor: "crosshair", tag: "rect", begin(t, p0) {
     const el = t.make("rect", { x: rnd(p0[0]), y: rnd(p0[1]), width: 0, height: 0 }), put = (c) => {
       for (const k in c) el.setAttribute(k, c[k]);
     };
@@ -2852,7 +2857,7 @@ var SableEdit = (() => {
     const w = Math.abs(b[0] - a[0]), h = Math.abs(b[1] - a[1]);
     return w > min && h > min ? { cx: rnd((a[0] + b[0]) / 2), cy: rnd((a[1] + b[1]) / 2), rx: rnd(w / 2), ry: rnd(h / 2) } : null;
   };
-  Tools.register({ id: "ellipse", label: "Ellipse", cursor: "crosshair", begin(t, p0) {
+  Tools.register({ id: "ellipse", label: "Ellipse", cursor: "crosshair", tag: "ellipse", begin(t, p0) {
     const el = t.make("ellipse", { cx: rnd(p0[0]), cy: rnd(p0[1]), rx: 0, ry: 0 }), put = (c) => {
       for (const k in c) el.setAttribute(k, c[k]);
     };
@@ -2869,7 +2874,7 @@ var SableEdit = (() => {
 
   // src/tools/line.js
   var lineFrom = (a, b, min = 0) => Math.hypot(b[0] - a[0], b[1] - a[1]) > min ? { x1: rnd(a[0]), y1: rnd(a[1]), x2: rnd(b[0]), y2: rnd(b[1]) } : null;
-  Tools.register({ id: "line", label: "Line", cursor: "crosshair", begin(t, p0) {
+  Tools.register({ id: "line", label: "Line", cursor: "crosshair", tag: "line", begin(t, p0) {
     const el = t.make("line", { x1: rnd(p0[0]), y1: rnd(p0[1]), x2: rnd(p0[0]), y2: rnd(p0[1]) }), put = (c) => {
       for (const k in c) el.setAttribute(k, c[k]);
     };
@@ -3339,11 +3344,11 @@ var SableEdit = (() => {
     if (P) P.validate(root);
     const perms = (el) => P ? P.resolve(el) : OPEN, toolOk = (id) => !P || P.toolOk(id);
     let sel = null, layer = null, halo = null, body = null, subs = [], menuOffs = [], start = MODES.includes(opts.mode) ? opts.mode : "scale", pref = start === "edit" ? "scale" : start, editing = start === "edit";
-    let tool = "pointer", oneShot = false, gesture = null, swallow = false, menuCtl = null;
+    let tool = "pointer", gesture = null, swallow = false, menuCtl = null;
     const cycLog = [];
-    const ONCE = false;
-    let penSeg = "auto", penEl = null, penPub = false;
+    let penSeg = "auto", penEl = null, penPub = false, lastPenAdd = -1e9;
     const penOn = () => !!Tools.get(tool)?.pen;
+    const armedFor = (el) => !!el && Tools.get(tool)?.tag === el.tagName;
     const undoS = [], redoS = [];
     let gid = 0;
     const record = (el, attr, old, nw, src, own) => {
@@ -3500,6 +3505,19 @@ var SableEdit = (() => {
       return MODES.filter((m) => modeOk(p, m) && (m !== "edit" || e && !e.generic));
     };
     const xmodes = (el) => modesFor(el).filter((m) => m !== "edit"), canEdit = (el) => modesFor(el).includes("edit");
+    const fitWith = (p, q, M) => {
+      let r = q;
+      if (p.snap) r = [Math.round(r[0] / p.snap[0]) * p.snap[0], Math.round(r[1] / p.snap[1]) * p.snap[1]];
+      if (p.bounds) {
+        const B = p.bounds, w = new DOMPoint(r[0], r[1]).matrixTransform(M), c = new DOMPoint(Math.min(B[2], Math.max(B[0], w.x)), Math.min(B[3], Math.max(B[1], w.y))).matrixTransform(M.inverse());
+        r = [c.x, c.y];
+      }
+      return r;
+    };
+    const armable = (id) => {
+      const T = Tools.get(id);
+      return !!T && (toolOk(id) || !!T.tag && [...root.querySelectorAll(T.tag)].some((el) => perms(el).selectable && canEdit(el)));
+    };
     const cur = () => {
       const t = xmodes(sel);
       if (canEdit(sel) && (editing || !t.length)) return "edit";
@@ -3539,7 +3557,7 @@ var SableEdit = (() => {
       sel = el;
       ctx = null;
       pref = start === "edit" ? "scale" : start;
-      editing = start === "edit" || penOn();
+      editing = start === "edit" || armedFor(el);
       if (tool === "pointer") svg.style.cursor = cursorWas;
       if (el) {
         const toOverlay = (e) => {
@@ -3594,18 +3612,11 @@ var SableEdit = (() => {
           // for a pen gesture cancelled halfway: its writes are the newest undo step
           /* a point the pen is about to add, brought onto the policy's grid and inside its walls: the policy leaves added nodes alone (it judges edits
              to existing ones), and the pen is nothing but added nodes */
-          fit(q) {
-            const p = perms(el);
-            let r = q;
-            if (p.snap) r = [Math.round(r[0] / p.snap[0]) * p.snap[0], Math.round(r[1] / p.snap[1]) * p.snap[1]];
-            if (p.bounds) {
-              const B = p.bounds, M = ownM(el), w = new DOMPoint(r[0], r[1]).matrixTransform(M), c = new DOMPoint(Math.min(B[2], Math.max(B[0], w.x)), Math.min(B[3], Math.max(B[1], w.y))).matrixTransform(M.inverse());
-              r = [c.x, c.y];
-            }
-            return r;
-          },
+          fit: (q) => fitWith(perms(el), q, ownM(el)),
           deny: (cap, reason) => emit("denied", { el, attr: "d", cap, reason, src: "widget" }),
           // a refusal that isn't a write (the pen won't continue a pinned shape)
+          penRecent: () => performance.now() - lastPenAdd < 600,
+          // the pen added a node a moment ago (a double-click on it is not a delete)
           penFinish: () => penFinish(),
           // the pen's "this path is done": deselect its node, drop it if it never got a segment
           can: (c) => perms(el).can(c),
@@ -3721,18 +3732,16 @@ var SableEdit = (() => {
       return (typeof c === "string" ? svg.querySelector(c) : c) || root;
     };
     const shapeAttrs = () => ({ fill: "#d6eaf8", stroke: "#2874a6", "stroke-width": 2, ...opts.shapeAttrs });
-    function setTool(id, once = false) {
+    function setTool(id, leaveMode) {
       if (gesture) return;
       const T = Tools.get(id);
-      if (id !== "pointer" && (!T || !toolOk(id))) return;
-      once = ONCE && once && id !== "pointer";
-      if (id === tool && once === oneShot) return;
-      const wasPen = penOn();
+      if (id !== "pointer" && (!T || !armable(id))) return;
+      if (id === tool) return;
+      const wasArmed = !!Tools.get(tool), wasPen = penOn();
       if (wasPen && !(T && T.pen)) penCleanup();
       tool = id;
-      oneShot = once;
       svg.style.cursor = T ? T.cursor || "crosshair" : cursorWas;
-      if (T && T.pen) {
+      if (T) {
         if (sel && sel.tagName !== T.tag) select(null);
         if (sel) {
           const was = cur();
@@ -3742,10 +3751,9 @@ var SableEdit = (() => {
             emit("mode", cur());
           }
         }
-      } else if (T) select(null);
-      else if (wasPen && sel) {
+      } else if (wasArmed && sel) {
         editing = false;
-        pref = start === "edit" ? "scale" : start;
+        if (leaveMode) pref = leaveMode;
         build();
         emit("mode", cur());
       }
@@ -3785,8 +3793,13 @@ var SableEdit = (() => {
     };
     function penBegin(T, host, e) {
       const key = "pen:" + ++gid;
+      lastPenAdd = performance.now();
       if (sel && layer && layer.pen && sel.tagName === T.tag && layer.pen.canContinue()) return layer.pen.begin(e, { key });
       penCleanup();
+      if (!toolOk(T.id)) {
+        emit("denied", { el: null, attr: null, cap: "create", reason: "capability", src: "tool" });
+        return null;
+      }
       const el = mk(T.tag, { ...shapeAttrs(), ...T.blank });
       host.insertBefore(el, host === ov.parentNode ? ov : null);
       const no = (cap) => {
@@ -3816,12 +3829,23 @@ var SableEdit = (() => {
       undoS.push({ key: "add:" + ++gid, t: Date.now(), items: [{ add: 1, el, parent: el.parentNode, next: el.nextSibling }] });
       redoS.length = 0;
       emit("history");
+      select(el);
       emit("create", { el, src: "tool" });
-      if (oneShot) {
-        setTool("pointer");
-        select(el);
-      }
     }
+    const strokeHit = (t, e) => {
+      try {
+        const M = matrixFor(t), q = new DOMPoint(e.clientX, e.clientY).matrixTransform(ov.getScreenCTM().inverse()).matrixTransform(M.inverse()), r = 6 / scale() / (Math.hypot(M.a, M.b) || 1);
+        return [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r], [r, r], [-r, -r], [r, -r], [-r, r]].some(([dx, dy]) => t.isPointInStroke(new DOMPoint(q.x + dx, q.y + dy)));
+      } catch {
+        return false;
+      }
+    };
+    const editPick = (T, e) => {
+      if (!T.tag || opts.pick === false || e.altKey) return null;
+      const t = pickAt(e);
+      if (!t || t.tagName !== T.tag || !canEdit(t)) return null;
+      return T.pen && !strokeHit(t, e) ? null : t;
+    };
     function toolDown(e) {
       if (ctxClick(e)) {
         e.stopPropagation();
@@ -3830,15 +3854,30 @@ var SableEdit = (() => {
       if (tool === "pointer" || e.button !== 0 || gesture) return;
       const T = Tools.get(tool), host = hostEl(), M = host.getScreenCTM();
       if (!T || !M) return;
-      if (T.pen && ov.contains(e.target)) return;
+      if (ov.contains(e.target) && !(e.altKey && T.pen && e.target.getAttribute?.("data-sable") === "hit")) return;
+      const t = editPick(T, e);
+      if (t) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (penOn()) penCleanup();
+        const fresh = t !== sel;
+        if (fresh) select(t);
+        if (sel === t && body) body.grab(e, { fresh });
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       const inv2 = M.inverse(), sc = Math.hypot(M.a, M.b) || 1, made = [], id = e.pointerId, g = { dead: false };
+      const probe = mk(T.tag || "g", { ...shapeAttrs() });
+      host.insertBefore(probe, host === ov.parentNode ? ov : null);
+      const pm = perms(probe);
+      probe.remove();
       const pt = (ev) => {
         const q = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(inv2);
-        return [q.x, q.y];
+        return T.pen ? [q.x, q.y] : fitWith(pm, [q.x, q.y], new DOMMatrix());
       };
-      const G = T.pen ? penBegin(T, host, e) : T.begin({ host, px: (n) => n / sc, make(tag, a) {
+      const x0 = e.clientX, y0 = e.clientY, other = !T.pen && opts.pick !== false ? pickAt(e) : null;
+      const G = T.pen ? penBegin(T, host, e) : !toolOk(T.id) ? (emit("denied", { el: null, attr: null, cap: "create", reason: "capability", src: "tool" }), null) : T.begin({ host, px: (n) => n / sc, bounds: pm.bounds || null, make(tag, a) {
         const el = mk(tag, { ...shapeAttrs(), ...a });
         host.insertBefore(el, host === ov.parentNode ? ov : null);
         made.push(el);
@@ -3886,6 +3925,12 @@ var SableEdit = (() => {
         made.forEach((x) => x !== el && x.remove());
         if (el) commit(el);
         if (T.pen) penAfter();
+        else if (!el && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) {
+          if (other) {
+            select(other);
+            setTool("pointer");
+          } else if (sel) select(null);
+        }
       };
       const cancel = (ev) => {
         if (ev.pointerId !== id) return;
@@ -3899,16 +3944,12 @@ var SableEdit = (() => {
     }
     const menuB = [];
     const toolItems = () => {
-      const ts = Tools.list.filter((d) => toolOk(d.id));
+      const ts = Tools.list.filter((d) => armable(d.id));
       if (!ts.length) return [];
-      return [
-        ...ONCE ? [{ label: "Use Once", submenu: ts.map((d) => ({ label: d.label, checked: oneShot && tool === d.id, action: () => setTool(d.id, true) })) }] : [],
-        // TODO(remove) with ONCE
-        { label: "Switch Tool", submenu: [
-          { label: "Pointer", checked: tool === "pointer", action: () => setTool("pointer") },
-          ...ts.map((d) => ({ label: d.label, checked: !oneShot && tool === d.id, action: () => setTool(d.id) }))
-        ] }
-      ];
+      return [{ label: "Switch Tool", submenu: [
+        { label: "Pointer", checked: tool === "pointer", action: () => setTool("pointer") },
+        ...ts.map((d) => ({ label: d.label, checked: tool === d.id, action: () => setTool(d.id) }))
+      ] }];
     };
     menuB.push(toolItems);
     const PEN_SEGS = [["auto", "Auto (click: line, drag: curve)"], ["L", "Line"], ["Q", "Quadratic curve"], ["C", "Cubic curve"], ["A", "Arc"]];
@@ -3924,10 +3965,14 @@ var SableEdit = (() => {
     };
     menuB.push(penItems);
     const onPenHover = (e) => {
-      if (!penOn() || gesture || e.pointerType === "touch") return;
-      const pn = layer && layer.pen;
-      svg.style.cursor = pn && pn.canContinue() ? "crosshair" : "cell";
-      pn && pn.hover(ov.contains(e.target) ? null : e);
+      const T = Tools.get(tool);
+      if (!T || gesture || e.pointerType === "touch") return;
+      const over = !ov.contains(e.target) && !!editPick(T, e);
+      if (T.pen) {
+        const pn = layer && layer.pen;
+        svg.style.cursor = over ? "default" : pn && pn.canContinue() ? "crosshair" : "cell";
+        pn && pn.hover(over || ov.contains(e.target) ? null : e);
+      } else svg.style.cursor = over ? "default" : T.cursor || "crosshair";
     };
     const onPenLeave = () => {
       layer && layer.pen && layer.pen.hover(null);
@@ -4023,6 +4068,14 @@ var SableEdit = (() => {
       },
       set mode(m) {
         if (!MODES.includes(m) || m === api.mode) return;
+        if (m === "edit" && sel) {
+          api.edit();
+          return;
+        }
+        if (m !== "edit" && sel && armedFor(sel)) {
+          setTool("pointer", m);
+          return;
+        }
         if (m === "edit") editing = true;
         else {
           pref = m;
@@ -4036,6 +4089,8 @@ var SableEdit = (() => {
       edit(el = sel) {
         if (el && el !== sel) select(el);
         if (!sel || !canEdit(sel)) return false;
+        const T = Tools.list.find((d) => d.tag === sel.tagName);
+        if (T && T.id !== tool && armable(T.id)) setTool(T.id);
         if (cur() !== "edit") {
           editing = true;
           build();
@@ -4052,10 +4107,6 @@ var SableEdit = (() => {
       set tool(id) {
         setTool(id);
       },
-      useTool(id) {
-        setTool(id, true);
-      },
-      // TODO(remove): useTool is sticky like tool= while ONCE is off
       get penSegment() {
         return penSeg;
       },
@@ -4067,8 +4118,9 @@ var SableEdit = (() => {
       },
       // what the pen's next node adds: 'auto' | 'L' | 'Q' | 'C' | 'A'
       get tools() {
-        return Tools.list.filter((d) => toolOk(d.id)).map(({ id, label }) => ({ id, label }));
+        return Tools.list.filter((d) => armable(d.id)).map(({ id, label }) => ({ id, label, create: toolOk(id) }));
       },
+      // create: false = it can only edit the shapes of its kind
       openMenu: openMenu2,
       closeMenu,
       addMenu(f2) {
@@ -4108,7 +4160,7 @@ var SableEdit = (() => {
         const np = compilePolicy(spec, { root });
         if (np) np.validate(root);
         P = np;
-        if (tool !== "pointer" && !toolOk(tool)) setTool("pointer");
+        if (tool !== "pointer" && !armable(tool)) setTool("pointer");
         if (!sel) return;
         if (!perms(sel).selectable) select(null);
         else build();

@@ -23,12 +23,12 @@
             edit mode: double-click / long-press a shape, or ed.edit(); Esc = back to scale, then deselect; ed.mode='edit' still works
             path segments: right-click > Segment type (L / Q / C / A); lines the editor touches are written H / V / L, shortest first
             (Delete / Backspace / Escape do the same while the page has focus, unless keys:false; the 'key' event lets an editor claim them),
-            tool (get/set: 'pointer' or a tool id, stays until changed), useTool(id) (same as tool=: 'use once' is switched off, see ONCE in attach.js), tools (what is registered),
+            tool (get/set: 'pointer' or a tool id, stays until changed), tools (what is registered),
             penSegment (get/set what the path pen's next node adds: 'auto' | 'L' | 'Q' | 'C' | 'A'),
             openMenu(x,y), closeMenu(), addMenu(({x,y,target,editor}) => [items]) (returns a remover),
             on('select'|'change'|'history'|'mode'|'tool'|'pen'|'create'|'remove'|'denied', fn), destroy()   (Ctrl/Cmd+Z, +Shift or Ctrl+Y bound unless keys:false)
   Permissions: policy is a list of rules, applied in order; nothing is allowed until a rule grants it, and a shape nothing is granted to
-    can't be selected (so {select:'.edit', can:'all'} is the old 'these shapes are editable'). Pass {rules:[...], create:false|[tool ids]}
+    can't be selected (so {select:'.edit', can:'all'} is the old 'these shapes are editable'). Pass {rules:[...], create:false|[tool ids]} (create = which tools may DRAW new shapes; a tool still arms to edit the shapes of its kind that the rules allow, ed.tools[i].create says which)
     to also limit which creation tools the menu offers. A rule is {select, can, cannot, attrs, pin, bounds, ranges, snap}:
       select  CSS selector | (el)=>bool | element | array of those (omitted = every shape)
       can / cannot  capabilities: transform.move|scale|rotate|skew, geometry.edit (the edit mode), nodes.insert|delete (need geometry.edit),
@@ -78,7 +78,11 @@
             rect (press = one corner, release = the opposite corner, any direction), ellipse (the same two corners, of its bounding box),
             line (press = start point, release = end point), path, polygon, polyline (the pens, below).
             A tool is armed -> every press is its gesture (nothing is selected, handles stay out of the way); Esc cancels a drag.
-            A created shape is one undo step; the tool stays armed with nothing selected (every tool is sticky: 'use once' is switched off).
+            A created shape is one undo step, and is selected in edit mode with its tool still armed (every tool is sticky). An armed tool is the edit mode of its
+            own kind of shape: arming keeps a selected shape of that kind; a press on one edits it (rect/circle/ellipse/line: its body; path/polygon/polyline:
+            its stroke, the fill starts a new one; Alt = draw a new one regardless); anywhere else draws. A tool def says {tag: the element it draws and edits}. A double-click / long press / ed.edit() / ed.mode='edit' arms a shape's
+            own tool (edit mode and the tool are one state; ed.mode='scale'|'rotate' or Esc leave it). A click that draws nothing selects a shape of another kind
+            (and leaves the tool) or deselects on empty canvas. The points a creation tool is given are snapped and kept inside the policy's bounds.
             Path pen: the path editor with the pen on, so the selected path keeps its handles. The pen continues from the selected node of the selected
             path if that node is an endpoint (a first node reverses the path), else a press starts a new path. Press = add a node (line), press-drag = pull
             handles (symmetric node, S form; Alt = break), press the other end of the path (2+ nodes) = close, a drag on that press shapes the closing segment. Click the end node again, double-click it, Enter

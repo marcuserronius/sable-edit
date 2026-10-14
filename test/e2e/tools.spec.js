@@ -24,12 +24,11 @@ const pick = async (page, p, submenu, item) => {
   await menu(page, item).click();
 };
 
-test('right-click opens the tool menu with both submenus; Esc closes it', async ({ page }) => {
+test('right-click opens the tool menu; its Switch Tool submenu lists the tools; Esc closes them one at a time', async ({ page }) => {
   await page.goto('/demo/');
   const p = await at(page, .5, .5);
   await page.mouse.click(p.x, p.y, { button: 'right' });
   await expect(page.getByRole('menu')).toHaveCount(1);
-  await expect(menu(page, 'Use Once')).toHaveCount(0); // TODO(remove): use-once is switched off (ONCE in src/attach.js); every tool is sticky
   await expect(menu(page, 'Switch Tool')).toBeVisible();
   await menu(page, 'Switch Tool').hover();
   await expect(page.getByRole('menu')).toHaveCount(2);
@@ -69,19 +68,15 @@ test('Switch Tool > Circle is sticky: each drag draws a circle (centre = press, 
   await expect(page.locator('#tool')).toHaveText('tool: pointer');
 });
 
-// TODO(remove): use-once is switched off (ONCE in src/attach.js); delete this test with the code
-test.skip('Use Once > Circle draws one circle, selects it, then reverts to the pointer; undo/redo the creation', async ({ page }) => {
+test('a created shape is one undo step: undo removes it, redo brings it back, and editing it afterwards is its own step', async ({ page }) => {
   await page.goto('/demo/');
   const p = await at(page, .5, .5);
-  await pick(page, p, 'Use Once', 'Circle');
-  await expect(page.locator('#tool')).toHaveText('tool: circle');
+  await pick(page, p, 'Switch Tool', 'Circle');
   await drag(page, p, 50, 30);
-  await expect(page.locator('#tool')).toHaveText('tool: pointer');
   await expect(page.locator('#sketch circle')).toHaveCount(1);
-  await expect(page.locator('#readout')).toHaveText('<circle> selected');
+  await expect(page.locator('#readout')).toHaveText('<circle> created');
   await page.keyboard.press('Control+z');
   await expect(page.locator('#sketch circle')).toHaveCount(0);
-  await expect(page.locator('#readout')).toHaveText('nothing selected');
   await page.keyboard.press('Control+Shift+z');
   await expect(page.locator('#sketch circle')).toHaveCount(1);
   // the new shape is a normal editable shape: its radius is one more undo step on top of the creation
@@ -106,16 +101,42 @@ test('circle tool: a click without a drag creates nothing; Esc mid-drag cancels'
   await expect(page.locator('#tool')).toHaveText('tool: circle'); // a cancelled gesture leaves the tool armed
 });
 
-test('with a tool armed, pressing on an existing shape draws instead of selecting or moving it', async ({ page }) => {
+test('with a tool armed, a press on a shape of another kind draws a new shape and leaves that one alone', async ({ page }) => {
   await page.goto('/demo/');
-  await page.locator('circle.edit').first().click();
   const before = await page.locator('circle.edit').first().getAttribute('cx');
   const b = await page.locator('circle.edit').first().boundingBox();
-  await page.evaluate(() => ed.tool = 'circle');
-  await expect(page.locator('#readout')).toHaveText('nothing selected');
-  await drag(page, { x: b.x + b.width / 2, y: b.y + b.height / 2 }, 30, 0);
-  await expect(page.locator('#sketch circle')).toHaveCount(1);
+  await page.evaluate(() => ed.tool = 'rect');
+  await drag(page, { x: b.x + b.width / 2, y: b.y + b.height / 2 }, 60, 40);
+  await expect(page.locator('#sketch rect')).toHaveCount(1);
   expect(await page.locator('circle.edit').first().getAttribute('cx')).toBe(before);
+});
+
+test('a tool is its shapes\' edit mode: arming keeps a selected shape of its kind, a press on one edits it, empty canvas draws', async ({ page }) => {
+  await page.goto('/demo/');
+  await page.locator('circle.edit').first().click();
+  const before = +await page.locator('circle.edit').first().getAttribute('cx');
+  await page.evaluate(() => ed.tool = 'circle');
+  expect(await page.evaluate(() => [ed.selected && ed.selected.tagName, ed.mode])).toEqual(['circle', 'edit']);
+  const b = await page.locator('circle.edit').first().boundingBox();
+  await drag(page, { x: b.x + b.width / 2, y: b.y + b.height / 2 }, 30, 0);   // the body of a circle: a move, not a new circle
+  await expect(page.locator('#sketch circle')).toHaveCount(0);
+  expect(+await page.locator('circle.edit').first().getAttribute('cx')).toBeGreaterThan(before);
+  const p = await at(page, .5, .5);
+  await drag(page, p, 50, 30);                                                // empty canvas: a new one
+  await expect(page.locator('#sketch circle')).toHaveCount(1);
+  expect(await page.evaluate(() => [ed.selected === document.querySelector('#sketch circle'), ed.mode])).toEqual([true, 'edit']);  // which is selected, ready to adjust
+  await page.keyboard.press('Escape');
+  expect(await page.evaluate(() => [ed.tool, ed.mode, !!ed.selected])).toEqual(['pointer', 'scale', true]);   // Esc: the tool is left, the shape stays selected
+  await page.keyboard.press('Escape');
+  expect(await page.evaluate(() => ed.selected)).toBeNull();
+});
+
+test('arming a tool deselects a shape of another kind', async ({ page }) => {
+  await page.goto('/demo/');
+  await page.locator('rect.edit').first().click();
+  expect(await page.evaluate(() => ed.selected && ed.selected.tagName)).toBe('rect');
+  await page.evaluate(() => ed.tool = 'circle');
+  expect(await page.evaluate(() => ed.selected)).toBeNull();
 });
 
 test('right-click on a selected shape opens the menu and does not switch mode', async ({ page }) => {
@@ -139,9 +160,11 @@ test('Switch Tool > Rectangle: press = one corner, release = the opposite corner
   const rects = page.locator('#sketch rect');
   await expect(rects).toHaveCount(1);
   await near(rects.first(), { x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y });
-  await drag(page, q, -80, -50); // up-left, the same two corners
+  // the first rect is selected now, with its handles at the corners: a press on it would edit it, so the second one is drawn elsewhere
+  const q2 = { x: p.x + 300, y: p.y + 200 }, a2 = await toUnits(page, { x: q2.x - 80, y: q2.y - 50 }), b2 = await toUnits(page, q2);
+  await drag(page, q2, -80, -50); // up-left
   await expect(rects).toHaveCount(2);
-  await near(rects.nth(1), { x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y });
+  await near(rects.nth(1), { x: a2.x, y: a2.y, width: b2.x - a2.x, height: b2.y - a2.y });
   await expect(rects.first()).toHaveClass('edit');
   await page.keyboard.press('Escape');
   await page.keyboard.press('Control+z');

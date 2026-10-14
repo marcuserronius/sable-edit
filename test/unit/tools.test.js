@@ -5,6 +5,9 @@ import { rectFrom } from '../../src/tools/rect.js';
 import { ellipseFrom } from '../../src/tools/ellipse.js';
 import { lineFrom } from '../../src/tools/line.js';
 import { Tools } from '../../src/tools.js';
+import '../../src/tools/path.js';
+import '../../src/tools/polygon.js';
+import '../../src/tools/polyline.js';
 import { placeMenu, placeSub } from '../../src/menu.js';
 
 test('circleFrom: centre + rim point -> cx, cy, r', () => {
@@ -79,4 +82,15 @@ test('lineFrom: keeps the press as the start and the release as the end', () => 
 test('tool registry: ellipse and line are registered', () => {
   assert.equal(Tools.get('ellipse').label, 'Ellipse');
   assert.equal(Tools.get('line').label, 'Line');
+});
+
+test('circleFrom: the walls keep the whole circle inside (the radius stops where it would touch one)', () => {
+  assert.deepEqual(circleFrom([60, 60], [260, 60], 0, [0, 0, 200, 120]), { cx: 60, cy: 60, r: 60 });
+  assert.deepEqual(circleFrom([60, 60], [90, 60], 0, [0, 0, 200, 120]), { cx: 60, cy: 60, r: 30 });
+  assert.equal(circleFrom([300, 60], [320, 60], 0, [0, 0, 200, 120]), null);          // a centre outside the walls makes nothing
+});
+
+test('every tool says which shape it draws and edits (its press on that kind of shape is an edit, not a new shape)', () => {
+  for (const [id, tag] of [['rect', 'rect'], ['circle', 'circle'], ['ellipse', 'ellipse'], ['line', 'line'], ['path', 'path'], ['polygon', 'polygon'], ['polyline', 'polyline']])
+    assert.equal(Tools.get(id).tag, tag, id);
 });

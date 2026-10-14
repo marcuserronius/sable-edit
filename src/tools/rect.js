@@ -8,7 +8,7 @@ export const rectFrom=(a,b,min=0)=>{
 };
 /* rect tool: mousedown = first corner [x1,y1], drag, mouseup = opposite corner [x2,y2]; any drag direction works.
    A click, or a drag thinner than 2 screen px in either direction, makes nothing. */
-Tools.register({id:'rect',label:'Rectangle',cursor:'crosshair',begin(t,p0){
+Tools.register({id:'rect',label:'Rectangle',cursor:'crosshair',tag:'rect',begin(t,p0){
   const el=t.make('rect',{x:rnd(p0[0]),y:rnd(p0[1]),width:0,height:0}),put=c=>{for(const k in c)el.setAttribute(k,c[k])};
   return {move:p=>{const c=rectFrom(p0,p);c&&put(c)},end:p=>{const c=rectFrom(p0,p,t.px(2));if(!c)return null;put(c);return el}};
 }});

@@ -177,16 +177,28 @@ test('move-only grant: the shape drags but has no modes; scale-only offers just 
   expect(await attr(page, 'plain-rect', 'x')).toBe(x1);
 });
 
-test('create restricts the tools the menu and the API offer', async ({ page }) => {
+test('create says what a tool may draw; a tool still arms to edit the shapes of its kind that the policy lets be edited', async ({ page }) => {
   await page.goto('/demo/');
   expect(await page.evaluate(() => ed.tools.map(t => t.id))).toEqual(['circle', 'rect', 'ellipse', 'line', 'path', 'polygon', 'polyline']);
   await page.evaluate(() => { ed.policy = { rules: [{ select: '.edit', can: 'all' }], create: ['circle'] }; });
-  expect(await page.evaluate(() => ed.tools.map(t => t.id))).toEqual(['circle']);
-  await page.evaluate(() => { ed.tool = 'rect'; });
-  expect(await page.evaluate(() => ed.tool)).toBe('pointer');
-  await page.evaluate(() => { ed.policy = { rules: [], create: false }; });
+  const tools = await page.evaluate(() => ed.tools);
+  expect(tools.filter(t => t.create).map(t => t.id)).toEqual(['circle']);
+  expect(tools.map(t => t.id)).toContain('rect');                     // it cannot draw, but the demo has rects it could edit
+  await page.evaluate(() => { window.__denied = []; ed.on('denied', d => window.__denied.push(d.cap)); ed.tool = 'rect'; });
+  expect(await page.evaluate(() => ed.tool)).toBe('rect');
+  await page.locator('#canvas').scrollIntoViewIfNeeded();
+  const b = await page.locator('#canvas').boundingBox(), p = { x: b.x + b.width * .5, y: b.y + b.height * .5 };
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x + 40, p.y + 30, { steps: 4 }); await page.mouse.up();
+  await expect(page.locator('#sketch rect')).toHaveCount(0);          // nothing drawn ...
+  expect(await page.evaluate(() => window.__denied)).toContain('create');   // ... and the host hears why
+  await page.locator('rect.edit').first().scrollIntoViewIfNeeded();
+  const r = await page.locator('rect.edit').first().boundingBox();
+  await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2); await page.mouse.down(); await page.mouse.move(r.x + r.width / 2 + 20, r.y + r.height / 2, { steps: 4 }); await page.mouse.up();
+  expect(await page.evaluate(() => ed.selected && ed.selected.tagName)).toBe('rect');   // a press on a rect edits it
+  await page.evaluate(() => { ed.policy = { rules: [], create: false }; });          // nothing editable, nothing to draw: nothing to arm
   expect(await page.evaluate(() => ed.tools)).toEqual([]);
   expect(await page.evaluate(() => ed.openMenu(100, 100))).toBe(false);              // nothing to put in the menu
+  expect(await page.evaluate(() => ed.tool)).toBe('pointer');
 });
 
 test('a policy typo is an error at attach time, not a silent hole', async ({ page }) => {

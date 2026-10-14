@@ -11,7 +11,7 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
 
 ## Permissions: not done yet
 - Snap: a grid origin offset (the grid is anchored at 0,0 of the shape's own coordinates); a user-held modifier to bypass it is deliberately absent (snap is a constraint, not a preference, so a host who wants a convenience grid for users needs a separate, non-policy option); a mirrored bezier handle (Shift-drag) snaps independently of its partner, so exact mirroring can be off by up to half a grid step; transforms other than moves (scale, rotate, skew) aren't snapped.
-- Bounds: new shapes from the one-gesture creation tools (not the pen, which fits every node to the bounds and the snap grid) aren't clamped as they're drawn (the first edit after is); bounds are in the parent's coordinate
+- Bounds: new shapes from every tool are fitted to the bounds and the snap grid as they are drawn; bounds are in the parent's coordinate
   system only (a `space: 'root'` option would help hosts whose shapes sit in translated groups); bezier handles count as nodes, which is
   stricter than the curve itself (a looser mode could clamp the true curve extent); stroke width isn't counted; scale / rotate / skew
   are refused at the wall rather than clamped; a bounded `g` is measured with getBBox (children's transforms included).
@@ -28,13 +28,18 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
   - Needs the pen tools first (path, polygon, polyline): a tool that lives past one press-drag-release, click-to-add-nodes, finish on
     Enter / double-click / Esc; the same lifecycle change the merge needs
     - DONE (pen stage 1): the path pen (`src/pen-math.js`, the path widget's pen mode, `pen:true` tools in attach.js). Also DONE: the polygon and polyline pens (a polygon inserts the new vertex after the selected vertex; a polyline continues from either end)
-    - Pen follow-ups: Shift to constrain the angle; a drag at the closing node doesn't yet smooth the joint with the first segment's handle; a pen option for "extend but not create"
-      (needs the create/edit permission split below); the selected path's 12px stroke blocks starting a new path right next to it
-  - DONE: sticky vs once decided: every tool is sticky. "Use once" is switched off (`ONCE` in `src/attach.js`) and its code is flagged
-    `TODO(remove)`: delete `ONCE`, `oneShot`, the `once` argument of `setTool` and the Use Once menu entry, make `ed.useTool` an alias or
-    drop it, and delete the skipped Use Once test in `test/e2e/tools.spec.js`
-  - Press on an object of the tool's own type edits it; anywhere else creates (so a new rect can't start on top of an existing rect)
-  - Create and edit stay separate permissions (a host may allow editing existing paths but not drawing new ones)
+    - Pen follow-ups: Shift to constrain the angle; a drag at the closing node doesn't yet smooth the joint with the first segment's handle
+      ("extend but not create" and starting a path on top of a stroke, with Alt, are done)
+  - DONE: sticky vs once decided: every tool is sticky; the use-once code and `ed.useTool` are gone
+  - DONE (Stage 2, part 1): press on an object of the tool's own type edits it; anywhere else creates (a rect, circle, ellipse or line: its body; the pens: its
+    stroke, with Alt to draw on top of one anyway); a created shape is selected, in edit mode, with the tool still armed
+  - DONE (Stage 2, part 1): create and edit are separate permissions: `create` governs drawing (`ed.tools[i].create`), a tool arms to edit while a shape of
+    its kind can be edited, and a pen can extend a path without being allowed to start one
+  - DONE (Stage 2, part 2): a double-click / long press / `ed.edit()` / `ed.mode='edit'` arms the shape's own tool, so edit mode and the tool are one
+    state (`ed.mode='scale'|'rotate'` or Esc leave it); a click that draws nothing selects a shape of another kind or deselects; the one-gesture tools snap
+    and clamp to the policy like the pens do. The pens' close / finish gestures only apply while drawing (once a node has been added)
+  - Follow-ups: a shape with an edit widget but no tool (a host's own) still uses the plain edit flag; hover cursors for armed tools on touch; the
+    pen's "click the end node to finish" could show a ring on hover
   - `ed.mode = 'edit'` and the `mode` event keep working, reporting edit while an edit tool is active
 - path editor:
   - DONE (paths: nodes and segments; polygons/polylines: nodes only): selection

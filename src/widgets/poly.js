@@ -43,7 +43,7 @@ for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ct
   }
   function build(){
     g.replaceChildren();items=[];
-    hit=mk(tag,{fill:'none',stroke:'transparent','stroke-width':12,'vector-effect':'non-scaling-stroke',style:'pointer-events:stroke;cursor:'+(ctx.can('nodes.insert')?'copy':'move')});
+    hit=mk(tag,{'data-sable':'hit',fill:'none',stroke:'transparent','stroke-width':12,'vector-effect':'non-scaling-stroke',style:'pointer-events:stroke;cursor:'+(ctx.can('nodes.insert')?'copy':'move')});
     hit.addEventListener('dblclick',e=>ctx.can('nodes.insert')&&insert(ctx.toLocal(e)));hit.addEventListener('pointerdown',e=>ctx.grab(e));g.append(hit);
     pv=g.appendChild(mk('polyline',{fill:'none',stroke:'var(--acc,#2f6fed)','stroke-dasharray':'5 4','vector-effect':'non-scaling-stroke',style:'pointer-events:none;display:none'})); // the pen's rubber band
     pinned=new Set(pinnedIdx(polyNodes(pts,closed),ctx.pin));
@@ -56,11 +56,11 @@ for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ct
         h.addEventListener('pointerdown',e=>{e.stopPropagation();S.pick('node',i,e.shiftKey);layout()});return;
       }
       let refs=[],rel=()=>{},wasHead=false;
-      drag(h,e=>{wasHead=ctx.penOn&&head()===i;rel=S.press('node',i,e.shiftKey);layout();refs=S.items.filter(j=>pts[j]&&!pinned.has(j)).map(j=>[j,[...pts[j]]])},
+      drag(h,e=>{wasHead=ctx.penOn&&drawing&&head()===i;rel=S.press('node',i,e.shiftKey);layout();refs=S.items.filter(j=>pts[j]&&!pinned.has(j)).map(j=>[j,[...pts[j]]])},
         (p,p0)=>{ // one vertex follows the pointer; a group moves by the pointer's travel
           if(refs.length===1)pts[refs[0][0]]=p;else refs.forEach(([j,o])=>pts[j]=[o[0]+p[0]-p0[0],o[1]+p[1]-p0[1]]);
         },()=>{rel();layout();if(wasHead)ctx.penFinish()}); // (pen: clicking the vertex the pen is on finishes the shape)
-      h.addEventListener('dblclick',e=>{e.stopPropagation();if(mv0||mv1||ctx.penOn)return;S.pick('node',i);del()});
+      h.addEventListener('dblclick',e=>{e.stopPropagation();if(mv0||mv1||(ctx.penOn&&ctx.penRecent()))return;S.pick('node',i);del()});
     });
     layout();
   }
@@ -74,7 +74,7 @@ for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ct
   ctx.on('view',()=>!dead&&layout());
   ctx.on('key',d=>{
     if(dead||d.handled||!S.size)return;
-    if(d.key==='Escape'){if(ctx.penOn)return;S.clear();layout();d.handled=true}else if(d.key==='Delete'||d.key==='Backspace'){del();d.handled=true}
+    if(d.key==='Escape'){if(ctx.penOn&&drawing)return;S.clear();layout();d.handled=true}else if(d.key==='Delete'||d.key==='Backspace'){del();d.handled=true}
   });
   ctx.on('change',({el:e,src})=>{
     if(dead||e!==el||src==='widget')return;
