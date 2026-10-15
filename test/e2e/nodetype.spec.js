@@ -63,7 +63,7 @@ test('arc + line: Smooth turns the line into a quadratic along the arc; Symmetri
   expect(cmds(await D(page))).toBe('MAA');
 });
 
-test('a closing line becomes a segment of its own, so the start and the end join; a host without nodes.insert is not offered that', async ({ page }) => {
+test('a closing line made a curve joins the start and the end but adds no node, so a host without nodes.insert is still offered it', async ({ page }) => {
   const pt = await setup(page, 'M20 100 L100 100 L60 40 Z');
   await nodeType(page, await pt(60, 40), 'Smooth');
   expect(cmds(await D(page))).toBe('MLCCZ');                              // M L, then the two cubics, the second closing on the start, then a Z that draws nothing
@@ -72,8 +72,9 @@ test('a closing line becomes a segment of its own, so the start and the end join
   const p = await pt(60, 40);
   await page.mouse.click(p.x, p.y, { button: 'right' });
   await menu(page, 'Node type').hover();
-  await expect(menu(page, 'Smooth')).toBeDisabled();
-  await expect(menu(page, 'Corner')).toBeEnabled();
+  await expect(menu(page, 'Smooth')).toBeEnabled();                       // the node count is unchanged: the closing curve ends on the start node
+  await menu(page, 'Smooth').click();
+  expect(cmds(await D(page))).toBe('MLCCZ');                              // and the policy lets the write through
 });
 
 test('a node with one cubic on both sides smooths against itself', async ({ page }) => {

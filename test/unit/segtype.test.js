@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePath, serPath, retype, convertSegment, convertSegments, deleteNodes, segInfo, dc, arcGeom } from '../../src/path-math.js';
+import { parsePath, serPath, retype, convertSegment, convertSegments, deleteNodes, segInfo, dc, arcGeom, closingLine } from '../../src/path-math.js';
 
 const P = parsePath, S = serPath;
 
@@ -60,10 +60,11 @@ test('line -> arc: tangent to the segment before when there is one, else a one r
   const g = arcGeom([0, 0], [10, 0], ...convertSegments(P('M0 0 L10 0'), [1], 'A').segs[1].arc);
   assert.ok(Math.abs(Math.abs(g.dth) - 1) < 1e-3);
 });
-test('convertSegments: selection follows, same type is left alone, M and Z are never converted', () => {
+test('convertSegments: selection follows, same type is left alone, M is never converted', () => {
   const s = P('M0 0 L10 0 L10 10 Z');
   assert.equal(convertSegments(s, [1, 2], 'L'), null);
-  assert.equal(convertSegments(s, [0, 3], 'C'), null);
+  assert.equal(convertSegments(s, [0], 'C'), null);
+  assert.equal(convertSegments(s, [3], 'L'), null);                       // a Z that draws a line already is one
   const r = convertSegments(P('M10 0 A10 10 0 0 1 -10 0 L-10 10'), [1, 2], 'C');
   assert.deepEqual(r.sel, [1, 2, 3]);
   assert.ok(r.segs.slice(1).every(q => q.t === 'C' && q.dirty));
@@ -71,4 +72,19 @@ test('convertSegments: selection follows, same type is left alone, M and Z are n
 test('converting the segment before an S writes the S out in full', () => {
   const r = convertSegments(P('M0 0 C1 5 2 5 10 0 S 20 -5 30 0'), [1], 'L');
   assert.equal(S(r.segs), 'M0 0 L10 0 C18 -5 20 -5 30 0');             // the S keeps the shape it had, written as a C
+});
+
+test('a Z that draws a line converts like an L: a curve back to the start, then a Z that draws nothing', () => {
+  const r = convertSegments(P('M0 0 L10 0 L10 10 Z'), [3], 'C');
+  assert.equal(S(r.segs), 'M0 0 L10 0 L10 10 C7.5 6.667 3.333 3.333 0 0 Z'.replace('7.5 6.667 3.333 3.333', S(r.segs).match(/C(.*) Z/)[1].split(' 0 0')[0]));
+  assert.deepEqual(r.segs.map(q => q.t), ['M', 'L', 'L', 'C', 'Z']);
+  assert.deepEqual(r.sel, [3]);                                           // the Z split off is not selected
+  assert.equal(closingLine(r.segs, 4), false);                            // and it no longer draws anything
+  assert.deepEqual(convertSegments(P('M0 0 L10 0 L10 10 Z'), [3], 'Q').segs.map(q => q.t), ['M', 'L', 'L', 'Q', 'Z']);
+});
+test('a Z onto the start is no segment at all: it is never converted', () => {
+  const s = P('M0 0 L10 0 L10 10 L0 0 Z');
+  assert.equal(closingLine(s, 4), false);
+  assert.equal(convertSegments(s, [4], 'C'), null);
+  assert.equal(closingLine(P('M0 0 L10 0 L10 10 Z'), 3), true);
 });

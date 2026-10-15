@@ -1,6 +1,6 @@
 import {Widgets} from '../registry.js';
 import {mk} from '../dom.js';
-import {parsePath,serPath,arcGeom,arcFit,dc,split,segInfo,segD,nearestSeg,deleteNodes,deleteSegments,healSmooth,fixSmooth,twins,handleLinks,dragHandle,retype,convertSegments} from '../path-math.js';
+import {parsePath,serPath,arcGeom,arcFit,dc,split,segInfo,segD,nearestSeg,deleteNodes,deleteSegments,healSmooth,fixSmooth,twins,closingLine,handleLinks,dragHandle,retype,convertSegments} from '../path-math.js';
 import {pathNodes,pinnedIdx} from '../policy.js';
 import {selection} from '../selection.js';
 import {subOf,endKind,reverseSub,penNode,canClose,closeSub} from '../pen-math.js';
@@ -103,6 +103,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     else segs.splice(i,1,{t:s.t,pts:L.slice(1),dirty:1},{t:s.t,pts:R.slice(1),dirty:1});
     S.pick('node',i);healSmooth(segs);write();build(); // the new node is the selection
   }
+  const nodeCount=x=>pathNodes(x).pts.length; // what nodes.insert is about: a joined node counts once, and a closing line made explicit (L, then a Z that draws nothing) adds a segment but no node
   const geom=i=>{const s=segs[i];return s&&s.t==='A'?arcGeom(prevPt(i),s.pts[0],...s.arc):null};
   /* Arc handles, one job each. Squares are only ever the start/end nodes. Dots:
        x dot  - rx only, on the x axis       y dot   - ry only, on the y axis
@@ -135,7 +136,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
       p=>{s.arc=arcFit(P(),s.pts[0],s.arc,'flip',[p[0]-offm[0],p[1]-offm[1]])});
   }
   function build(){
-    g.replaceChildren();items=[];lines=[];arcs=[];const pn=pathNodes(segs);pinned=new Set(pinnedIdx(pn,ctx.pin).map(k=>pn.seg[k]));
+    g.replaceChildren();items=[];lines=[];arcs=[];const pn=pathNodes(segs);pinned=new Set(pinnedIdx(pn,ctx.pin).flatMap(k=>pn.twin[k]>=0?[pn.seg[k],pn.twin[k]]:[pn.seg[k]])); // (a joined node is pinned as a whole, both halves)
     healSmooth(segs);S.keep('node',i=>segs[i]&&segs[i].t!=='Z');S.keep('seg',i=>segs[i]&&segs[i].t!=='M'); // an undo or an outside edit may have renumbered things
     tw=twins(segs);
     if(S.kind==='node'&&S.items.some(j=>tw[j]>=0&&tw[j]<j)){const k=[...new Set(S.items.map(j=>tw[j]>=0&&tw[j]<j?tw[j]:j))];S.clear();k.forEach(j=>S.pick('node',j,true))} // a joined node is selected by its first half
@@ -289,14 +290,14 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
       if(k&&!S.has('seg',k.i)){S.pick('seg',k.i);layout()}
     }
     if(S.kind==='seg'){
-      const js=S.items.filter(j=>segs[j]&&segs[j].t!=='M'&&segs[j].t!=='Z'),cur=new Set(js.map(j=>segs[j].t));
+      const info=segInfo(segs),js=S.items.filter(j=>segs[j]&&segs[j].t!=='M'&&(segs[j].t!=='Z'||closingLine(segs,j,info))),cur=new Set(js.map(j=>segs[j].t==='Z'?'L':segs[j].t)); // (a Z that draws a line is a line)
       if(!js.length)return [];
-      const it=(label,t)=>{const r=convertSegments(segs,js,t);return {label,checked:cur.size===1&&cur.has(t),disabled:!!r&&r.segs.length>segs.length&&!ctx.can('nodes.insert'),action:()=>setSegType(js,t)}};
+      const it=(label,t)=>{const r=convertSegments(segs,js,t);return {label,checked:cur.size===1&&cur.has(t),disabled:!!r&&nodeCount(r.segs)>nodeCount(segs)&&!ctx.can('nodes.insert'),action:()=>setSegType(js,t)}};
       return [{label:'Segment type',submenu:[it('Line','L'),it('Quadratic curve','Q'),it('Cubic curve','C'),it('Arc','A')]}];
     }
     const info=segInfo(segs),js=(S.kind==='node'?S.items:[]).filter(j=>nodeTypeAny(segs,j,info,tw)),ts=new Set(js.map(j=>nodeTypeAny(segs,j,info,tw)));
     if(!js.length)return [];
-    const it=(label,t)=>{const r=t!=='corner'&&setNodeTypes(segs,js,t);return {label,checked:ts.size===1&&ts.has(t),disabled:!!r&&r.segs.length>segs.length&&!ctx.can('nodes.insert'),action:()=>setType(js,t)}}; // (a closing line made explicit is one more segment)
+    const it=(label,t)=>{const r=t!=='corner'&&setNodeTypes(segs,js,t);return {label,checked:ts.size===1&&ts.has(t),disabled:!!r&&nodeCount(r.segs)>nodeCount(segs)&&!ctx.can('nodes.insert'),action:()=>setType(js,t)}};
     return [{label:'Node type',submenu:[it('Corner','corner'),it('Smooth','smooth'),it('Symmetric','symmetric')]}];
   });
   ctx.on('view',()=>!dead&&layout());

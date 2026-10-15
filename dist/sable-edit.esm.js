@@ -519,6 +519,10 @@ function twins(segs, info = segInfo(segs)) {
   return tw;
 }
 var twinOf = (segs, j, info) => twins(segs, info)[j] ?? -1;
+function closingLine(segs, i, info = segInfo(segs)) {
+  const s = segs[i];
+  return !!s && s.t === "Z" && !!info[i].from && !near(info[i].from, info[i].to);
+}
 function nodeHandles(segs, j, info = segInfo(segs)) {
   const s = segs[j];
   if (!s || s.t === "Z") return null;
@@ -678,8 +682,14 @@ function arcPieces(g, to, quad) {
   return out;
 }
 function convertSegment(segs, i, type, info = segInfo(segs)) {
+  const z = segs[i];
+  if (z && z.t === "Z") {
+    if (!closingLine(segs, i, info) || type === "L") return null;
+    const r = convertSegment(segs.map((q, k) => k === i ? { t: "L", pts: [[...info[i].to]] } : q), i, type, info);
+    return r && [...r, { t: "Z", pts: [] }];
+  }
   const s = segs[i];
-  if (!s || s.t === "M" || s.t === "Z" || s.t === type) return null;
+  if (!s || s.t === "M" || s.t === type) return null;
   const { from, to } = info[i], g = s.t === "A" ? arcGeom(from, to, ...s.arc) : null, cp2 = s.t === "C" || s.t === "Q" ? [from, ...s.pts] : null;
   if (type === "L") return [{ t: "L", pts: [[...to]] }];
   if (type === "Q") {
@@ -717,7 +727,7 @@ function convertSegments(segs, idxs, type) {
   let did = false;
   segs.forEach((s, i) => {
     const r = want.has(i) ? convertSegment(segs, i, type, info) : null;
-    if (want.has(i) && s.t !== "M") sel.push(...r ? r.map((_, k) => out.length + k) : [out.length]);
+    if (want.has(i) && s.t !== "M") sel.push(...r ? r.map((_, k) => out.length + k).filter((_, k) => r[k].t !== "Z") : [out.length]);
     if (r) {
       did = true;
       r.forEach((q) => out.push({ ...q, dirty: 1 }));
@@ -781,29 +791,35 @@ var only = (o, keys, what) => {
 var NUM = /[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
 var polyNodes = (pts, closed) => ({ pts, ends: closed || !pts.length ? [] : pts.length > 1 ? [0, pts.length - 1] : [0] });
 function pathNodes(segs) {
-  const pts = [], seg = [], ends = [];
-  let from = -1, closed = false;
+  const info = segInfo(segs), tw = twins(segs, info), pts = [], seg = [], twin = [], tpt = [], ends = [];
+  let from = -1, closed = false, joined = false;
   const flush = () => {
-    if (from >= 0 && !closed && pts.length > from) {
-      ends.push(from);
-      if (pts.length - 1 > from) ends.push(pts.length - 1);
-    }
+    if (from < 0 || closed || pts.length <= from) return;
+    ends.push(from);
+    if (!joined && pts.length - 1 > from) ends.push(pts.length - 1);
   };
   segs.forEach((s, i) => {
     if (s.t === "M") {
       flush();
       from = pts.length;
       closed = false;
+      joined = tw[i] >= 0;
     }
     if (s.t === "Z") {
       closed = true;
       return;
     }
+    if (tw[i] >= 0 && tw[i] < i) {
+      twin[from] = i;
+      tpt[from] = s.pts.at(-1);
+      return;
+    }
+    twin[pts.length] = -1;
     pts.push(s.pts.at(-1));
     seg.push(i);
   });
   flush();
-  return { pts, ends, seg };
+  return { pts, ends, seg, twin, tpt };
 }
 var readNodes = (tag, get) => {
   if (tag === "path") return pathNodes(parsePath(get("d") || ""));
@@ -830,8 +846,9 @@ function pinnedIdx(n, pin) {
   return [...s].sort((a, b) => a - b);
 }
 var pinsHold = (a, b, pin) => {
-  const at = (n) => pinnedIdx(n, pin).map((i) => n.pts[i]), x = at(a), y = at(b);
-  return x.length === y.length && x.every((p, i) => Math.abs(p[0] - y[i][0]) <= TOL && Math.abs(p[1] - y[i][1]) <= TOL);
+  const at = (n) => pinnedIdx(n, pin).map((i) => [n.pts[i], n.tpt && n.tpt[i] || n.pts[i]]), x = at(a), y = at(b);
+  const ok = (p, q) => Math.abs(p[0] - q[0]) <= TOL && Math.abs(p[1] - q[1]) <= TOL;
+  return x.length === y.length && x.every((p, i) => ok(p[0], y[i][0]) && ok(p[1], y[i][1]));
 };
 var cssProps = (s) => {
   const o = {}, parts = [];
@@ -1893,6 +1910,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     write();
     build();
   }
+  const nodeCount = (x) => pathNodes(x).pts.length;
   const geom = (i) => {
     const s = segs[i];
     return s && s.t === "A" ? arcGeom(prevPt(i), s.pts[0], ...s.arc) : null;
@@ -1976,7 +1994,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     lines = [];
     arcs = [];
     const pn = pathNodes(segs);
-    pinned = new Set(pinnedIdx(pn, ctx.pin).map((k) => pn.seg[k]));
+    pinned = new Set(pinnedIdx(pn, ctx.pin).flatMap((k) => pn.twin[k] >= 0 ? [pn.seg[k], pn.twin[k]] : [pn.seg[k]]));
     healSmooth(segs);
     S.keep("node", (i) => segs[i] && segs[i].t !== "Z");
     S.keep("seg", (i) => segs[i] && segs[i].t !== "M");
@@ -2294,11 +2312,11 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
       }
     }
     if (S.kind === "seg") {
-      const js2 = S.items.filter((j) => segs[j] && segs[j].t !== "M" && segs[j].t !== "Z"), cur = new Set(js2.map((j) => segs[j].t));
+      const info2 = segInfo(segs), js2 = S.items.filter((j) => segs[j] && segs[j].t !== "M" && (segs[j].t !== "Z" || closingLine(segs, j, info2))), cur = new Set(js2.map((j) => segs[j].t === "Z" ? "L" : segs[j].t));
       if (!js2.length) return [];
       const it2 = (label, t) => {
         const r = convertSegments(segs, js2, t);
-        return { label, checked: cur.size === 1 && cur.has(t), disabled: !!r && r.segs.length > segs.length && !ctx.can("nodes.insert"), action: () => setSegType(js2, t) };
+        return { label, checked: cur.size === 1 && cur.has(t), disabled: !!r && nodeCount(r.segs) > nodeCount(segs) && !ctx.can("nodes.insert"), action: () => setSegType(js2, t) };
       };
       return [{ label: "Segment type", submenu: [it2("Line", "L"), it2("Quadratic curve", "Q"), it2("Cubic curve", "C"), it2("Arc", "A")] }];
     }
@@ -2306,7 +2324,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     if (!js.length) return [];
     const it = (label, t) => {
       const r = t !== "corner" && setNodeTypes(segs, js, t);
-      return { label, checked: ts.size === 1 && ts.has(t), disabled: !!r && r.segs.length > segs.length && !ctx.can("nodes.insert"), action: () => setType(js, t) };
+      return { label, checked: ts.size === 1 && ts.has(t), disabled: !!r && nodeCount(r.segs) > nodeCount(segs) && !ctx.can("nodes.insert"), action: () => setType(js, t) };
     };
     return [{ label: "Node type", submenu: [it("Corner", "corner"), it("Smooth", "smooth"), it("Symmetric", "symmetric")] }];
   });

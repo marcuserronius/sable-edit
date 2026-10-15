@@ -242,6 +242,11 @@ export function twins(segs,info=segInfo(segs)){
   return tw;
 }
 export const twinOf=(segs,j,info)=>twins(segs,info)[j]??-1;
+/* Is segment i a Z that really draws a line (its subpath's last point is not on its first)? Such a Z is a segment in its own right, an L back to the
+   start. A Z that closes onto the start draws nothing: it is no segment, and the nodes at its two ends are one joined node (see twins). */
+export function closingLine(segs,i,info=segInfo(segs)){
+  const s=segs[i];return !!s&&s.t==='Z'&&!!info[i].from&&!near(info[i].from,info[i].to);
+}
 /* the two handles that meet at node j (a segment index, never a Z): {n, a (the one on the incoming side), b (outgoing), flag}, either may be
    null (a line, an arc, the end of the path). A joined node (see twins) has the handles of its last and first segments.
    flag: the segment whose first control point is `b`, when that is j+1 (the one that can carry `sm`), else -1. */
@@ -375,7 +380,13 @@ function arcPieces(g,to,quad){
    arc tangent to the segment before it when there is one, else a one radian arc); a line becomes a straight curve (control points at the middle, or the
    thirds). */
 export function convertSegment(segs,i,type,info=segInfo(segs)){
-  const s=segs[i];if(!s||s.t==='M'||s.t==='Z'||s.t===type)return null;
+  const z=segs[i];
+  if(z&&z.t==='Z'){ // a Z that really draws a line is a segment like any other, and stays a Z for its line's sake: Z -> [curve to the start, Z that now draws nothing]
+    if(!closingLine(segs,i,info)||type==='L')return null;
+    const r=convertSegment(segs.map((q,k)=>k===i?{t:'L',pts:[[...info[i].to]]}:q),i,type,info);
+    return r&&[...r,{t:'Z',pts:[]}];
+  }
+  const s=segs[i];if(!s||s.t==='M'||s.t===type)return null;
   const {from,to}=info[i],g=s.t==='A'?arcGeom(from,to,...s.arc):null,cp=s.t==='C'||s.t==='Q'?[from,...s.pts]:null;
   if(type==='L')return [{t:'L',pts:[[...to]]}];
   if(type==='Q'){
@@ -401,7 +412,7 @@ export function convertSegments(segs,idxs,type){
   const info=segInfo(segs),want=new Set(idxs),out=[],sel=[];let did=false;
   segs.forEach((s,i)=>{
     const r=want.has(i)?convertSegment(segs,i,type,info):null;
-    if(want.has(i)&&s.t!=='M')sel.push(...(r?r.map((_,k)=>out.length+k):[out.length]));
+    if(want.has(i)&&s.t!=='M')sel.push(...(r?r.map((_,k)=>out.length+k).filter((_,k)=>r[k].t!=='Z'):[out.length])); // (a Z split off a closing line is not part of the selection)
     if(r){did=true;r.forEach(q=>out.push({...q,dirty:1}))}else out.push(clone(s));
   });
   return did?{segs:healSmooth(out),sel}:null;

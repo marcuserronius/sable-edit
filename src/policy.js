@@ -54,7 +54,7 @@
    Pins imply stability: any pin switches off the shape's transform.* (a move or scale would drag a pinned node along),
    and a pin by index also switches off nodes.insert / nodes.delete (indices would shift).
    TODO(reassess): pin holding in canvas coordinates while transforms stay allowed but constrained. See TODO.md. */
-import {parsePath,serPath,arcGeom} from './path-math.js';
+import {parsePath,serPath,arcGeom,segInfo,twins} from './path-math.js';
 import {rnd} from './util.js';
 
 export const CAPS=['transform.move','transform.scale','transform.rotate','transform.skew','geometry.edit','nodes.insert','nodes.delete','attrs.edit','element.convert'];
@@ -108,16 +108,23 @@ const only=(o,keys,what)=>{for(const k in o)if(!keys.includes(k))throw new Error
 const NUM=/[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
 /* {pts, ends}: ends = indices of the endpoints (none for a closed shape) */
 export const polyNodes=(pts,closed)=>({pts,ends:closed||!pts.length?[]:pts.length>1?[0,pts.length-1]:[0]});
-/* path segments -> {pts: every anchor (a segment's end point, Z has none), ends, seg: the segment index of each anchor} */
+/* path segments -> {pts, ends, seg, twin, tpt}: the nodes as the editor sees them. A subpath whose last point sits on its first has ONE node there (a Z
+   that draws no line, or no Z at all; see `twins` in path-math), so the last half is not a node of its own: it is left out of pts, and `twin[k]` is
+   the segment index of the dropped half (-1 when the node is not joined), `tpt[k]` where that half is. A Z that really draws a line is a segment, and the
+   nodes at its ends are two (so -1 names the last node before the closing line, just as for a polygon). That keeps the count of nodes, and what an index
+   names, the same when a closing line is made a curve (L back to the start, then a Z that draws nothing).
+   seg[k]: the segment index of node k (its M for a joined one). ends: indices of the endpoints (none for a closed subpath; the joined node alone for
+   a joined one that was never closed) */
 export function pathNodes(segs){
-  const pts=[],seg=[],ends=[];let from=-1,closed=false;
-  const flush=()=>{if(from>=0&&!closed&&pts.length>from){ends.push(from);if(pts.length-1>from)ends.push(pts.length-1)}};
+  const info=segInfo(segs),tw=twins(segs,info),pts=[],seg=[],twin=[],tpt=[],ends=[];let from=-1,closed=false,joined=false;
+  const flush=()=>{if(from<0||closed||pts.length<=from)return;ends.push(from);if(!joined&&pts.length-1>from)ends.push(pts.length-1)};
   segs.forEach((s,i)=>{
-    if(s.t==='M'){flush();from=pts.length;closed=false}
+    if(s.t==='M'){flush();from=pts.length;closed=false;joined=tw[i]>=0}
     if(s.t==='Z'){closed=true;return}
-    pts.push(s.pts.at(-1));seg.push(i);
+    if(tw[i]>=0&&tw[i]<i){twin[from]=i;tpt[from]=s.pts.at(-1);return}
+    twin[pts.length]=-1;pts.push(s.pts.at(-1));seg.push(i);
   });
-  flush();return {pts,ends,seg};
+  flush();return {pts,ends,seg,twin,tpt};
 }
 const readNodes=(tag,get)=>{
   if(tag==='path')return pathNodes(parsePath(get('d')||''));
@@ -132,8 +139,9 @@ export function pinnedIdx(n,pin){
   return [...s].sort((a,b)=>a-b);
 }
 const pinsHold=(a,b,pin)=>{
-  const at=n=>pinnedIdx(n,pin).map(i=>n.pts[i]),x=at(a),y=at(b);
-  return x.length===y.length&&x.every((p,i)=>Math.abs(p[0]-y[i][0])<=TOL&&Math.abs(p[1]-y[i][1])<=TOL);
+  const at=n=>pinnedIdx(n,pin).map(i=>[n.pts[i],n.tpt&&n.tpt[i]||n.pts[i]]),x=at(a),y=at(b); // (both halves of a joined node are pinned together)
+  const ok=(p,q)=>Math.abs(p[0]-q[0])<=TOL&&Math.abs(p[1]-q[1])<=TOL;
+  return x.length===y.length&&x.every((p,i)=>ok(p[0],y[i][0])&&ok(p[1],y[i][1]));
 };
 
 /* style="a:b;c:d" -> {a:'b',c:'d'} (semicolons inside quotes and parentheses, e.g. url(data:...), don't split) */

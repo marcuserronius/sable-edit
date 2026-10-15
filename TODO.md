@@ -77,12 +77,17 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
     else a 1 radian arc). Open follow-ups:
     - Commands are always written absolute, so the choice is only H/V/L, never
       the relative h/v/l that might be a few characters shorter
-    - The closing line of a closed path (Z) can't be converted; do that by
-      turning it into an explicit L first
+    - DONE: the closing line of a closed path (a Z that really draws a line) is a segment like an L: the Segment type menu shows it as Line and
+      converts it to Q / C / A (`convertSegment`), written as the curve back to the start followed by a Z that then draws nothing. A Z onto the
+      start is no segment (`closingLine` in `src/path-math.js`)
     - A line made into a curve isn't made tangent to its neighbours (only the
       arc case is), and the arc only looks at the segment before it
     - Arc to cubic/quadratic can add nodes (an arc of more than a quarter turn
       becomes several curves), so it needs nodes.insert
+    - DONE: `nodes.insert` and pins count nodes as the editor does (`pathNodes` in `src/policy.js`): a joined node (first and last point coincident,
+      Z or not) is one node, and a real closing line is not a node, so making a closing line a curve is not an insert and shifts no pin index. A pin on a
+      joined node holds both halves. Caveat: dragging a last node exactly onto the first (e.g. with grid snap) now merges two nodes into one joined
+      node, so a policy without `nodes.delete` refuses it
 - DONE: conversion of objects to other types (`src/convert.js`; right-click > Convert to, `ed.convert()`)
   - Every shape (line too) => path, always exact: lines become H/V/L, circles and ellipses four quarter arcs (`arcs:false` gives cubics),
     rounded rect corners arcs. Arcs rather than cubics because they are exact and the path editor already handles them.

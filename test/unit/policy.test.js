@@ -644,3 +644,33 @@ test('snap: markup clauses', () => {
   assert.throws(() => compilePolicy('markup').validate(node('svg', { [MARKUP_ATTR]: 'snap: ten' })), /snap needs a positive number/);
   assert.deepEqual(compilePolicy('markup').resolve(node('rect', { [MARKUP_ATTR]: 'all; snap: 25 5' })).snap, [25, 5]);
 });
+
+/* ---- Z closures: a joined node is one node ---- */
+test('pathNodes: a closing line makes two nodes, a Z onto the start (or no Z, same point) one joined node', () => {
+  const line = pathNodes(parsePath('M0 0 L10 0 L10 10 Z'));
+  assert.equal(line.pts.length, 3);
+  assert.deepEqual(line.twin, [-1, -1, -1]);
+  const j = pathNodes(parsePath('M0 0 L10 0 L10 10 L0 0 Z'));
+  assert.deepEqual(j.pts, [[0, 0], [10, 0], [10, 10]]);                   // the last half is the first node
+  assert.deepEqual(j.seg, [0, 1, 2]); assert.deepEqual(j.twin, [4 - 1, -1, -1]);
+  assert.deepEqual(j.ends, []);
+  const open = pathNodes(parsePath('M0 0 L10 0 L10 10 L0 0'));            // never closed, but still one joined node
+  assert.equal(open.pts.length, 3); assert.deepEqual(open.ends, [0]);
+});
+test('a closing line made a curve adds no node: no nodes.insert needed, and no pin shifts', () => {
+  const pol = compilePolicy([{ select: 'path', can: ['geometry.edit', 'nodes.delete'], pin: [0, -1] }]);
+  const e = el('path', { d: 'M0 0 L10 0 L10 10 Z' });
+  // the closing line (10,10 -> 0,0) turned into a cubic, then a Z that draws nothing
+  assert.equal(write(pol, e, 'd', 'M0 0 L10 0 L10 10 C7 7 3 3 0 0 Z').ok, true);
+  // a real new node still is an insert, and is refused
+  assert.equal(write(pol, e, 'd', 'M0 0 L10 0 L10 10 L5 5 Z').cap, 'nodes.insert');
+  // a pinned node (the last one before the closing line) must not move
+  assert.equal(write(pol, e, 'd', 'M0 0 L10 0 L11 11 C7 7 3 3 0 0 Z').reason, 'pinned');
+});
+test('pins hold a joined node as a whole: either half moving is a move of the pinned node', () => {
+  const pol = compilePolicy([{ select: 'path', can: ['geometry.edit', 'nodes.insert'], pin: ['endpoints'] }]);
+  const e = el('path', { d: 'M0 0 L10 0 L10 10 L0 0' });                   // open, but its ends are one joined node
+  assert.equal(write(pol, e, 'd', 'M0 0 L10 0 L10 10 L0 0').ok, true);
+  assert.equal(write(pol, e, 'd', 'M0 0 L10 0 L10 10 L1 1').reason, 'pinned');
+  assert.equal(write(pol, e, 'd', 'M1 1 L10 0 L10 10 L0 0').reason, 'pinned');
+});
