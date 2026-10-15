@@ -54,6 +54,7 @@ test('right-click a node: Node type > Corner turns S back into C', async ({ page
   await setup(page, 'M30 140 C 40 60, 80 60, 100 100 S 160 140, 180 100');
   const n = await at(page, 100, 100);
   await page.mouse.click(n.x, n.y); await page.mouse.click(n.x, n.y, { button: 'right' });
+  await page.getByRole('menuitem', { name: /^\s*\u2713?\s*Node\s*\u25B8?\s*$/ }).hover();
   await page.getByRole('menuitem', { name: /Node type/ }).hover();
   await page.getByRole('menuitem', { name: 'Corner' }).click();
   expect(await d(page)).not.toMatch(/S/);

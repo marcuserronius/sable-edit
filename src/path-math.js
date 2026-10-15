@@ -3,16 +3,20 @@ export const lerp=(a,b,t)=>[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t];
 export const dc=(p,t)=>p.length===1?p[0]:dc(p.slice(1).map((q,k)=>lerp(p[k],q,t)),t);
 export const split=(p,t)=>{const L=[],R=[];let q=p;while(q.length){L.push(q[0]);R.unshift(q.at(-1));q=q.slice(1).map((v,k)=>lerp(q[k],v,t))}return [L,R]};
 export const NARGS={M:2,L:2,H:1,V:1,C:6,S:4,Q:4,T:2,A:7,Z:0};
-/* d string -> absolute segments {t:M|L|C|Q|A|Z, pts:[[x,y]..], arc?, sm?}. H/V->L, H/V->L (keeping `c:'H'|'V'` as the command it came from), S->C, T->Q; the last two keep `sm:1` (smooth: the
+/* d string -> absolute segments {t:M|L|C|Q|A|Z, pts:[[x,y]..], arc?, sm?}. Every subpath starts with an M (one is added after a Z that is followed by a drawing command). H/V->L, H/V->L (keeping `c:'H'|'V'` as the command it came from), S->C, T->Q; the last two keep `sm:1` (smooth: the
    first control point is the reflection of the previous segment's, so serPath writes them back as S / T). */
 export function parsePath(d){
   const tk=d.match(/[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g)||[],out=[];
-  let i=0,cmd=null,x=0,y=0,sx=0,sy=0,lc=null,lq=null;
+  let i=0,cmd=null,x=0,y=0,sx=0,sy=0,lc=null,lq=null,afterZ=false;
   while(i<tk.length){
     if(/[a-zA-Z]/.test(tk[i]))cmd=tk[i++];
     const U=cmd&&cmd.toUpperCase(),n=NARGS[U]; if(n===undefined)break;
     const rel=cmd!==U,a=tk.slice(i,i+n).map(Number); i+=n; if(a.length<n||a.some(isNaN))break;
     const X=v=>rel?x+v:v,Y=v=>rel?y+v:v; let nc=null,nq=null;
+    /* a drawing command straight after a Z starts a new subpath at the old one's start, with no M to say so: write that M in, so every subpath
+       has one (the editor finds subpaths by their M) */
+    if(afterZ&&U!=='M'&&U!=='Z')out.push({t:'M',pts:[[sx,sy]]});
+    afterZ=U==='Z';
     switch(U){
       case 'Z': out.push({t:'Z',pts:[]});x=sx;y=sy;cmd=null;break;
       case 'M': x=X(a[0]);y=Y(a[1]);sx=x;sy=y;out.push({t:'M',pts:[[x,y]]});cmd=rel?'l':'L';break;

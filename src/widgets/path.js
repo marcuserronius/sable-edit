@@ -5,6 +5,7 @@ import {pathNodes,pinnedIdx} from '../policy.js';
 import {selection} from '../selection.js';
 import {subOf,endKind,reverseSub,penNode,canClose,closeSub} from '../pen-math.js';
 import {nodeTypeAny,setNodeTypes} from '../node-type.js';
+import {unattached,joinNodes,splitNodes} from '../node-ops.js';
 /* Path widget: nodes (squares) + bezier handles (dots). Drag to edit; Shift while dragging a
    cubic handle mirrors its partner; double-click the path to add a node, a node to delete it. The policy can take those two
    away (nodes.insert / nodes.delete) and pin nodes: a pinned node is drawn grey and can't be dragged or deleted (its bezier
@@ -17,8 +18,11 @@ import {nodeTypeAny,setNodeTypes} from '../node-type.js';
    Node types (a node with a curve handle on each side): corner, smooth (the handles stay on one line through the node, each keeping its
    own length) and symmetric (mirror images; written as S / T in the path data). A handle drag keeps the node as it is: a smooth node's
    other handle swings to stay opposite, a symmetric node's mirrors. Shift while dragging makes the node symmetric; Alt / Option moves the
-   handle alone and makes it a corner. The right-click menu has Node type > Corner / Smooth / Symmetric for the selected nodes (the one
+   handle alone and makes it a corner. The right-click menu has Node > Node type > Corner / Smooth / Symmetric for the selected nodes (the one
    under the pointer is selected first). Smooth nodes are drawn rounded, symmetric ones round.
+   Node > Join with segment / Merge (two unattached nodes: a line between them, or one node at their average position) and Node > Split
+   (the subpath is cut at the node; see src/node-ops.js). A path may have several subpaths (M / m): each is edited like a path of its own, but all
+   of them are one shape, with every node drawn and selectable together. A subpath that ends where it starts has one joined node there.
    Pen mode (the Path tool, ctx.penOn; see pen() below): a press on empty canvas adds a node after the selected endpoint, a drag pulls its handles.
    Right-click a segment for Segment type > Line / Quadratic curve / Cubic curve / Arc. Lines are written H / V / L, whichever is shortest, for
    the segments an edit touches; the others keep the command they had. */
@@ -48,6 +52,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
   const halves=js=>[...new Set(js.flatMap(j=>tw[j]>=0?[j,tw[j]]:[j]))]; // node indices -> both halves of every joined one
   function bind(h,onStart,onMove,onClick){ // onClick: a release that was not a drag
     h.addEventListener('pointerdown',e=>{
+      if(e.button===2||(e.button===0&&e.ctrlKey&&/Mac/.test(navigator.platform)))return; // a right-click belongs to the context menu: it must not collapse a multi-selection or start a drag
       e.stopPropagation();h.setPointerCapture(e.pointerId);const p0=ctx.toLocal(e);onStart(p0,e);mv0=mv1;mv1=false;
       const mv=ev=>{if(Math.hypot(ev.clientX-e.clientX,ev.clientY-e.clientY)>3)mv1=true;onMove(ctx.toLocal(ev),p0,ev);write();layout()};
       h.addEventListener('pointermove',mv);
@@ -281,6 +286,16 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     if(ctx.penOn){const k=r.sel.at(-1);if(endKind(segs,k)==='end'){S.clear();S.pick('node',k)}} // drawing: the pen's endpoint stays the selection, so the next click still continues
     write('seg:'+(++uid));build();
   }
+  /* Join with segment / Merge (two unattached nodes) and Split: they change how the path is divided into subpaths, so they renumber nodes
+     (a pin refuses them, as it does cutting a segment); a split makes a node more (nodes.insert), a merge one less (nodes.delete) */
+  function joinSel(js,merge){
+    const r=joinNodes(segs,js,{merge});if(!r)return;
+    segs=r.segs;S.clear();r.sel.forEach(j=>S.pick('node',j,true));write((merge?'merge:':'join:')+(++uid));build();
+  }
+  function splitSel(js){
+    const r=splitNodes(segs,js);if(!r)return;
+    segs=r.segs;S.clear();r.sel.forEach(j=>S.pick('node',j,true));write('split:'+(++uid));build();
+  }
   ctx.menu(({x,y})=>{
     if(!ctx.can('geometry.edit'))return [];
     const o=ctx.toOverlay({clientX:x,clientY:y}),at=segs.findIndex((q,j)=>q.t!=='Z'&&Math.hypot(...T0(segs[j].pts.at(-1)).map((v,k)=>v-o[k]))<=ctx.px(9));
@@ -295,10 +310,21 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
       const it=(label,t)=>{const r=convertSegments(segs,js,t);return {label,checked:cur.size===1&&cur.has(t),disabled:!!r&&nodeCount(r.segs)>nodeCount(segs)&&!ctx.can('nodes.insert'),action:()=>setSegType(js,t)}};
       return [{label:'Segment type',submenu:[it('Line','L'),it('Quadratic curve','Q'),it('Cubic curve','C'),it('Arc','A')]}];
     }
-    const info=segInfo(segs),js=(S.kind==='node'?S.items:[]).filter(j=>nodeTypeAny(segs,j,info,tw)),ts=new Set(js.map(j=>nodeTypeAny(segs,j,info,tw)));
-    if(!js.length)return [];
-    const it=(label,t)=>{const r=t!=='corner'&&setNodeTypes(segs,js,t);return {label,checked:ts.size===1&&ts.has(t),disabled:!!r&&nodeCount(r.segs)>nodeCount(segs)&&!ctx.can('nodes.insert'),action:()=>setType(js,t)}};
-    return [{label:'Node type',submenu:[it('Corner','corner'),it('Smooth','smooth'),it('Symmetric','symmetric')]}];
+    const info=segInfo(segs),all=S.kind==='node'?S.items:[],js=all.filter(j=>nodeTypeAny(segs,j,info,tw)),ts=new Set(js.map(j=>nodeTypeAny(segs,j,info,tw))),kids=[];
+    if(!all.length)return [];
+    if(js.length){ // Node type: only for nodes that have a segment on each side
+      const it=(label,t)=>{const r=t!=='corner'&&setNodeTypes(segs,js,t);return {label,checked:ts.size===1&&ts.has(t),disabled:!!r&&nodeCount(r.segs)>nodeCount(segs)&&!ctx.can('nodes.insert'),action:()=>setType(js,t)}};
+      kids.push({label:'Node type',submenu:[it('Corner','corner'),it('Smooth','smooth'),it('Symmetric','symmetric')]});
+    }
+    const pins=ctx.pin.length>0;
+    if(unattached(segs,all)){ // two nodes that have only one segment (or none): the ends of open subpaths
+      const jr=joinNodes(segs,all),mr=joinNodes(segs,all,{merge:true});
+      kids.push({label:'Join with segment',disabled:pins||!jr,action:()=>joinSel(all,false)});
+      kids.push({label:'Merge',disabled:pins||!mr||!ctx.can('nodes.delete'),action:()=>joinSel(all,true)});
+    }
+    const sp=splitNodes(segs,all);
+    if(sp)kids.push({label:'Split',disabled:pins||(nodeCount(sp.segs)>nodeCount(segs)&&!ctx.can('nodes.insert')),action:()=>splitSel(all)});
+    return kids.length?[{label:'Node',submenu:kids}]:[];
   });
   ctx.on('view',()=>!dead&&layout());
   ctx.on('key',d=>{ // Escape clears the selection, Delete / Backspace remove it (see del)

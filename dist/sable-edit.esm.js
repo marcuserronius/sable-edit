@@ -160,7 +160,7 @@ var split = (p, t) => {
 var NARGS = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0 };
 function parsePath(d) {
   const tk = d.match(/[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g) || [], out = [];
-  let i = 0, cmd = null, x = 0, y = 0, sx = 0, sy = 0, lc = null, lq = null;
+  let i = 0, cmd = null, x = 0, y = 0, sx = 0, sy = 0, lc = null, lq = null, afterZ = false;
   while (i < tk.length) {
     if (/[a-zA-Z]/.test(tk[i])) cmd = tk[i++];
     const U = cmd && cmd.toUpperCase(), n = NARGS[U];
@@ -170,6 +170,8 @@ function parsePath(d) {
     if (a.length < n || a.some(isNaN)) break;
     const X = (v) => rel ? x + v : v, Y = (v) => rel ? y + v : v;
     let nc = null, nq = null;
+    if (afterZ && U !== "M" && U !== "Z") out.push({ t: "M", pts: [[sx, sy]] });
+    afterZ = U === "Z";
     switch (U) {
       case "Z":
         out.push({ t: "Z", pts: [] });
@@ -328,11 +330,11 @@ function arcFit(P, E, arc, kind, p, opts = {}) {
         if (prev.f < 0 !== f2 < 0) {
           let a = prev.t, b = t, fa_ = prev.f;
           for (let m = 0; m < 40; m++) {
-            const mid2 = (a + b) / 2, fm = res2(mid2);
+            const mid3 = (a + b) / 2, fm = res2(mid3);
             if (fm < 0 === fa_ < 0) {
-              a = mid2;
+              a = mid3;
               fa_ = fm;
-            } else b = mid2;
+            } else b = mid3;
           }
           const r = (a + b) / 2;
           if (best === null || Math.abs(r - t0) < Math.abs(best - t0)) best = r;
@@ -652,13 +654,13 @@ function endTangent(segs, i, info) {
   }
   return unit(vec(to, from));
 }
-function arcThrough(from, mid2, to) {
-  const [ax, ay] = from, [bx, by] = mid2, [cx, cy] = to, d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+function arcThrough(from, mid3, to) {
+  const [ax, ay] = from, [bx, by] = mid3, [cx, cy] = to, d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
   const sc = Math.hypot(cx - ax, cy - ay);
   if (Math.abs(d) < 1e-6 * sc * sc) return null;
   const a2 = ax * ax + ay * ay, b2 = bx * bx + by * by, c2 = cx * cx + cy * cy, ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d, uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d, R2 = Math.hypot(ax - ux, ay - uy);
-  const m = vec(mid2, from), n = vec(to, mid2);
-  return [R2, R2, 0, vec(from, mid2)[0] * vec(to, mid2)[0] + vec(from, mid2)[1] * vec(to, mid2)[1] > 0 ? 1 : 0, m[0] * n[1] - m[1] * n[0] > 0 ? 1 : 0];
+  const m = vec(mid3, from), n = vec(to, mid3);
+  return [R2, R2, 0, vec(from, mid3)[0] * vec(to, mid3)[0] + vec(from, mid3)[1] * vec(to, mid3)[1] > 0 ? 1 : 0, m[0] * n[1] - m[1] * n[0] > 0 ? 1 : 0];
 }
 function arcTangent(from, to, d) {
   const ch = vec(to, from), cr = d[0] * ch[1] - d[1] * ch[0], L2 = ch[0] * ch[0] + ch[1] * ch[1];
@@ -1746,6 +1748,133 @@ function setNodeTypes(segs, js, type) {
   return did ? { segs: out, sel } : null;
 }
 
+// src/node-ops.js
+var clone2 = (s) => ({ ...s, pts: s.pts.map((p) => [...p]), ...s.arc ? { arc: [...s.arc] } : {} });
+var near2 = (a, b) => Math.abs(a[0] - b[0]) <= 0.01 && Math.abs(a[1] - b[1]) <= 0.01;
+function unattached(segs, idxs) {
+  const u = [...new Set(idxs)];
+  if (u.length !== 2) return null;
+  const k = u.map((j) => endKind(segs, j));
+  return k[0] && k[1] ? k : null;
+}
+function joinNodes(segs, idxs, opts = {}) {
+  const [a0, b0] = [...new Set(idxs)].sort((x, y) => x - y), kinds = unattached(segs, [a0, b0]);
+  if (!kinds) return null;
+  const merge = !!opts.merge, A3 = subOf(segs, a0), B = subOf(segs, b0);
+  if (A3.m === B.m) {
+    const n = A3.last - A3.m + 1;
+    if (n < (merge ? 3 : 2)) return null;
+    if (!merge) {
+      const r = closeSub(segs, A3.last);
+      return r ? { segs: r.segs, sel: [a0, b0] } : null;
+    }
+    const out2 = segs.map(clone2), p = mid2(out2[A3.m].pts[0], out2[A3.last].pts[0]);
+    shift(out2, A3.last, "end", p);
+    shift(out2, A3.m, "start", p);
+    out2.splice(A3.last + 1, 0, { t: "Z", pts: [] });
+    return { segs: healSmooth(out2), sel: [A3.m] };
+  }
+  let cur = segs;
+  if (kinds[0] === "start") {
+    const r = reverseSub(cur, A3.m);
+    if (!r) return null;
+    cur = r.segs;
+  }
+  if (kinds[1] === "end") {
+    const r = reverseSub(cur, B.m);
+    if (!r) return null;
+    cur = r.segs;
+  }
+  const m1 = A3.m, l1 = subOf(cur, m1).last, m2 = B.m, l2 = subOf(cur, m2).last, out = [];
+  const aPt = cur[l1].pts.at(-1), bPt = cur[m2].pts[0];
+  const head = cur.slice(m1, l1 + 1).map(clone2), tail = cur.slice(m2 + 1, l2 + 1).map(clone2);
+  let sel;
+  if (merge) {
+    const p = mid2(aPt, bPt), h = [...head];
+    shiftSeg(h, h.length - 1, "end", p, aPt);
+    if (tail.length) shiftSeg(tail, 0, "start", p, bPt);
+    sel = [m1 + head.length - 1];
+    out.push(...cur.slice(0, m1).map(clone2), ...h, ...tail, ...cur.slice(l1 + 1, m2).map(clone2), ...cur.slice(l2 + 1).map(clone2));
+  } else {
+    sel = [m1 + head.length - 1, m1 + head.length];
+    out.push(...cur.slice(0, m1).map(clone2), ...head, { t: "L", pts: [[...bPt]], dirty: 1 }, ...tail, ...cur.slice(l1 + 1, m2).map(clone2), ...cur.slice(l2 + 1).map(clone2));
+  }
+  return { segs: healSmooth(out), sel };
+}
+var mid2 = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+function shiftSeg(list, i, which, p, old) {
+  const s = list[i], d = [p[0] - old[0], p[1] - old[1]];
+  if (which === "end") {
+    s.pts[s.pts.length - 1] = [...p];
+    if (s.t === "C") s.pts[1] = [s.pts[1][0] + d[0], s.pts[1][1] + d[1]];
+    if (s.t === "L") s.dirty = 1;
+  } else {
+    if (s.t === "C") s.pts[0] = [s.pts[0][0] + d[0], s.pts[0][1] + d[1]];
+    if (s.t === "L") s.dirty = 1;
+  }
+}
+function shift(list, i, which, p) {
+  if (which === "end") {
+    shiftSeg(list, i, "end", p, list[i].pts.at(-1));
+  } else {
+    const old = list[i].pts[0];
+    list[i].pts[0] = [...p];
+    if (list[i + 1]) shiftSeg(list, i + 1, "start", p, old);
+  }
+}
+function splitNodes(segs, idxs) {
+  const want = new Set(idxs), info = segInfo(segs), tw = twins(segs, info), out = [], sel = [];
+  let did = false, i = 0;
+  while (i < segs.length) {
+    if (segs[i].t !== "M") {
+      out.push(clone2(segs[i]));
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < segs.length && segs[j].t !== "M") j++;
+    const r = splitSub(segs, info, tw, i, j, want);
+    if (!r) {
+      for (let k = i; k < j; k++) out.push(clone2(segs[k]));
+      i = j;
+      continue;
+    }
+    did = true;
+    for (const pc of r) {
+      if (pc.cut) sel.push(out.length);
+      out.push({ t: "M", pts: [[...pc.start]] }, ...pc.edges);
+    }
+    i = j;
+  }
+  return did ? { segs: healSmooth(out), sel } : null;
+}
+function splitSub(segs, info, tw, i, j, want) {
+  const z = segs.findIndex((s, k) => k > i && k < j && s.t === "Z");
+  if (z >= 0 && z !== j - 1) return null;
+  const L2 = (z >= 0 ? z : j) - 1 - i;
+  if (L2 < 1) return null;
+  const ring = z >= 0, real = ring && !near2(info[z].from, info[z].to);
+  const E = [null];
+  for (let k = 1; k <= L2; k++) E.push(segs[i + k]);
+  if (real) E.push({ t: "L", pts: [[...info[z].to]], dirty: 1 });
+  const N = E.length - 1;
+  const pt = (k) => k === 0 ? segs[i].pts[0] : E[k].pts.at(-1);
+  const joinedEnd = tw[i] === i + L2;
+  const at = (idx) => idx === i || joinedEnd && idx === i + L2 ? 0 : idx > i && idx <= i + L2 ? idx - i : -1;
+  const cuts = [...new Set([...want].map(at).filter((k) => k > 0 && k < N))].sort((a, b) => a - b);
+  const base = ring && [...want].some((idx) => at(idx) === 0);
+  if (!cuts.length && !base) return null;
+  const edges = (a, b) => {
+    const r = [];
+    for (let k = a + 1; k <= b; k++) r.push(clone2(E[k]));
+    return r;
+  };
+  const pieces = [], ks = ring && !base ? cuts : [0, ...cuts, N];
+  for (let n = 0; n + 1 < ks.length; n++) pieces.push({ start: [...pt(ks[n])], edges: edges(ks[n], ks[n + 1]), cut: ks[n] > 0 || base });
+  if (ring && !base) pieces.push({ start: [...pt(ks.at(-1))], edges: [...edges(ks.at(-1), N), ...edges(0, ks[0])], cut: true });
+  return pieces;
+}
+
 // src/widgets/path.js
 Widgets.register((el) => el.tagName === "path", (ctx) => {
   const el = ctx.el, g = mk("g");
@@ -1803,6 +1932,7 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
   const halves = (js) => [...new Set(js.flatMap((j) => tw[j] >= 0 ? [j, tw[j]] : [j]))];
   function bind(h, onStart, onMove, onClick) {
     h.addEventListener("pointerdown", (e) => {
+      if (e.button === 2 || e.button === 0 && e.ctrlKey && /Mac/.test(navigator.platform)) return;
       e.stopPropagation();
       h.setPointerCapture(e.pointerId);
       const p0 = ctx.toLocal(e);
@@ -2298,6 +2428,24 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     write("seg:" + ++uid);
     build();
   }
+  function joinSel(js, merge) {
+    const r = joinNodes(segs, js, { merge });
+    if (!r) return;
+    segs = r.segs;
+    S.clear();
+    r.sel.forEach((j) => S.pick("node", j, true));
+    write((merge ? "merge:" : "join:") + ++uid);
+    build();
+  }
+  function splitSel(js) {
+    const r = splitNodes(segs, js);
+    if (!r) return;
+    segs = r.segs;
+    S.clear();
+    r.sel.forEach((j) => S.pick("node", j, true));
+    write("split:" + ++uid);
+    build();
+  }
   ctx.menu(({ x, y }) => {
     if (!ctx.can("geometry.edit")) return [];
     const o = ctx.toOverlay({ clientX: x, clientY: y }), at = segs.findIndex((q, j) => q.t !== "Z" && Math.hypot(...T0(segs[j].pts.at(-1)).map((v, k) => v - o[k])) <= ctx.px(9));
@@ -2314,19 +2462,30 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     if (S.kind === "seg") {
       const info2 = segInfo(segs), js2 = S.items.filter((j) => segs[j] && segs[j].t !== "M" && (segs[j].t !== "Z" || closingLine(segs, j, info2))), cur = new Set(js2.map((j) => segs[j].t === "Z" ? "L" : segs[j].t));
       if (!js2.length) return [];
-      const it2 = (label, t) => {
+      const it = (label, t) => {
         const r = convertSegments(segs, js2, t);
         return { label, checked: cur.size === 1 && cur.has(t), disabled: !!r && nodeCount(r.segs) > nodeCount(segs) && !ctx.can("nodes.insert"), action: () => setSegType(js2, t) };
       };
-      return [{ label: "Segment type", submenu: [it2("Line", "L"), it2("Quadratic curve", "Q"), it2("Cubic curve", "C"), it2("Arc", "A")] }];
+      return [{ label: "Segment type", submenu: [it("Line", "L"), it("Quadratic curve", "Q"), it("Cubic curve", "C"), it("Arc", "A")] }];
     }
-    const info = segInfo(segs), js = (S.kind === "node" ? S.items : []).filter((j) => nodeTypeAny(segs, j, info, tw)), ts = new Set(js.map((j) => nodeTypeAny(segs, j, info, tw)));
-    if (!js.length) return [];
-    const it = (label, t) => {
-      const r = t !== "corner" && setNodeTypes(segs, js, t);
-      return { label, checked: ts.size === 1 && ts.has(t), disabled: !!r && nodeCount(r.segs) > nodeCount(segs) && !ctx.can("nodes.insert"), action: () => setType(js, t) };
-    };
-    return [{ label: "Node type", submenu: [it("Corner", "corner"), it("Smooth", "smooth"), it("Symmetric", "symmetric")] }];
+    const info = segInfo(segs), all = S.kind === "node" ? S.items : [], js = all.filter((j) => nodeTypeAny(segs, j, info, tw)), ts = new Set(js.map((j) => nodeTypeAny(segs, j, info, tw))), kids = [];
+    if (!all.length) return [];
+    if (js.length) {
+      const it = (label, t) => {
+        const r = t !== "corner" && setNodeTypes(segs, js, t);
+        return { label, checked: ts.size === 1 && ts.has(t), disabled: !!r && nodeCount(r.segs) > nodeCount(segs) && !ctx.can("nodes.insert"), action: () => setType(js, t) };
+      };
+      kids.push({ label: "Node type", submenu: [it("Corner", "corner"), it("Smooth", "smooth"), it("Symmetric", "symmetric")] });
+    }
+    const pins = ctx.pin.length > 0;
+    if (unattached(segs, all)) {
+      const jr = joinNodes(segs, all), mr = joinNodes(segs, all, { merge: true });
+      kids.push({ label: "Join with segment", disabled: pins || !jr, action: () => joinSel(all, false) });
+      kids.push({ label: "Merge", disabled: pins || !mr || !ctx.can("nodes.delete"), action: () => joinSel(all, true) });
+    }
+    const sp = splitNodes(segs, all);
+    if (sp) kids.push({ label: "Split", disabled: pins || nodeCount(sp.segs) > nodeCount(segs) && !ctx.can("nodes.insert"), action: () => splitSel(all) });
+    return kids.length ? [{ label: "Node", submenu: kids }] : [];
   });
   ctx.on("view", () => !dead && layout());
   ctx.on("key", (d) => {
@@ -2926,12 +3085,12 @@ var ownM = (el) => {
   return m;
 };
 function fmtTransform({ a, b, c, d, e, f: f2 }) {
-  const near3 = (x, y) => Math.abs(x - y) < 1e-7, r = (v) => +v.toFixed(6), q = (v) => +v.toFixed(3);
+  const near4 = (x, y) => Math.abs(x - y) < 1e-7, r = (v) => +v.toFixed(6), q = (v) => +v.toFixed(3);
   const tr = Math.abs(e) > 1e-9 || Math.abs(f2) > 1e-9 ? `translate(${q(e)} ${q(f2)})` : "";
   let rest = "";
-  if (near3(b, 0) && near3(c, 0)) {
-    if (!(near3(a, 1) && near3(d, 1))) rest = `scale(${r(a)}${near3(a, d) ? "" : " " + r(d)})`;
-  } else if (near3(a, d) && near3(b, -c) && near3(a * a + b * b, 1)) rest = `rotate(${+(Math.atan2(b, a) * 180 / Math.PI).toFixed(4)})`;
+  if (near4(b, 0) && near4(c, 0)) {
+    if (!(near4(a, 1) && near4(d, 1))) rest = `scale(${r(a)}${near4(a, d) ? "" : " " + r(d)})`;
+  } else if (near4(a, d) && near4(b, -c) && near4(a * a + b * b, 1)) rest = `rotate(${+(Math.atan2(b, a) * 180 / Math.PI).toFixed(4)})`;
   else return `matrix(${[a, b, c, d].map(r).join(" ")} ${q(e)} ${q(f2)})`;
   return [tr, rest].filter(Boolean).join(" ") || null;
 }
@@ -3355,7 +3514,7 @@ var points = (s) => {
   return p;
 };
 var fmt = (pts) => pts.map((q) => rnd(q[0]) + "," + rnd(q[1])).join(" ");
-var near2 = (a, b, e = 1e-9) => Math.abs(a - b) <= e;
+var near3 = (a, b, e = 1e-9) => Math.abs(a - b) <= e;
 var SLOP = 3e-3;
 function readShape(tag, get) {
   switch (tag) {
@@ -3524,7 +3683,7 @@ function flatten(segs, tol) {
     }
     pts.push([...to]);
   }
-  const looped = pts.length > 2 && near2(pts[0][0], pts.at(-1)[0], 1e-9) && near2(pts[0][1], pts.at(-1)[1], 1e-9);
+  const looped = pts.length > 2 && near3(pts[0][0], pts.at(-1)[0], 1e-9) && near3(pts[0][1], pts.at(-1)[1], 1e-9);
   return { pts, closed, looped, exact };
 }
 function detectRect(segs) {
@@ -3534,7 +3693,7 @@ function detectRect(segs) {
   if (pts.length !== 4) return null;
   const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
   if (!(x1 - x0 > 0 && y1 - y0 > 0)) return null;
-  const bits = pts.map((p) => [near2(p[0], x0, 1e-9) ? 0 : near2(p[0], x1, 1e-9) ? 1 : -1, near2(p[1], y0, 1e-9) ? 0 : near2(p[1], y1, 1e-9) ? 1 : -1]);
+  const bits = pts.map((p) => [near3(p[0], x0, 1e-9) ? 0 : near3(p[0], x1, 1e-9) ? 1 : -1, near3(p[1], y0, 1e-9) ? 0 : near3(p[1], y1, 1e-9) ? 1 : -1]);
   if (bits.some((b) => b[0] < 0 || b[1] < 0) || new Set(bits.map((b) => b.join())).size !== 4) return null;
   for (let i = 0; i < 4; i++) {
     const a = bits[i], b = bits[(i + 1) % 4];
@@ -3561,7 +3720,7 @@ function detectEllipse(segs) {
     else if (Math.abs(rx - ry) < SLOP) ry = rx;
     else return null;
     const e = { cx: g.cx, cy: g.cy, rx, ry };
-    if (c && !(near2(c.cx, e.cx, SLOP) && near2(c.cy, e.cy, SLOP) && near2(c.rx, e.rx, SLOP) && near2(c.ry, e.ry, SLOP))) return null;
+    if (c && !(near3(c.cx, e.cx, SLOP) && near3(c.cy, e.cy, SLOP) && near3(c.rx, e.rx, SLOP) && near3(c.ry, e.ry, SLOP))) return null;
     c = c || e;
     const sg = Math.sign(g.dth);
     if (dir && sg !== dir) return null;
@@ -3572,9 +3731,9 @@ function detectEllipse(segs) {
   return arcs >= 2 && Math.abs(tot - 2 * Math.PI) < 5e-3 ? c : null;
 }
 var res = (tag, attrs, exact) => ({ tag, attrs: Object.fromEntries(Object.entries(attrs).filter(([, v]) => v !== void 0).map(([k, v]) => [k, typeof v === "number" ? String(rnd(v)) : v])), exact: !!exact });
-var rectRes = (x, y, w, h, rx, ry, exact) => res("rect", { x, y, width: w, height: h, rx: rx > 0 ? rx : void 0, ry: rx > 0 && !near2(rx, ry, 5e-4) ? ry : void 0 }, exact);
+var rectRes = (x, y, w, h, rx, ry, exact) => res("rect", { x, y, width: w, height: h, rx: rx > 0 ? rx : void 0, ry: rx > 0 && !near3(rx, ry, 5e-4) ? ry : void 0 }, exact);
 var ellRes = (e, exact) => res("ellipse", { cx: e.cx, cy: e.cy, rx: e.rx, ry: e.ry }, exact);
-var circRes = (e, exact) => res("circle", { cx: e.cx, cy: e.cy, r: Math.sqrt(e.rx * e.ry) }, exact && near2(e.rx, e.ry, SLOP));
+var circRes = (e, exact) => res("circle", { cx: e.cx, cy: e.cy, r: Math.sqrt(e.rx * e.ry) }, exact && near3(e.rx, e.ry, SLOP));
 function convertShape(tag, get, to, opts = {}) {
   if (tag === to || !KINDS.includes(to)) return null;
   const g = readShape(tag, get);

@@ -70,6 +70,15 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
       one square, selecting / dragging / deleting it takes both halves with their handles, and its handles pair up across the joint like any
       node's. A Z that really draws a line stays a segment of its own and the nodes at its ends are independent (`twins` in `src/path-math.js`)
     - Node-type shapes (rounded = smooth, round = symmetric) are a first guess
+  - DONE: Node menu (`src/node-ops.js`): Node > Node type, Join with segment, Merge (two unattached nodes), Split (a node inside a subpath); subpaths
+    (M / m) edit as paths of their own inside one shape; a drawing command after a Z gets an explicit M when parsed. Open follow-ups:
+    - A closed subpath cut at a node comes out as one subpath with one *joined* node (coincident ends are one node by design), so its two ends can't be
+      pulled apart yet: an "Unjoin" (detach the halves of a joined node) would do it
+    - After Split the two coincident nodes overlap: the new one (the later M) is on top and selected. Selecting the other one means moving the new one first
+    - Merge / Join only take two unattached nodes; merging an inner node with another, or more than two at once, isn't defined (it would make a node with three
+      or more segments, which a single path can't hold except as several subpaths meeting)
+    - Join / Merge / Split are refused for a shape with any pin (they renumber nodes), as cutting a segment is
+    - Polygons and polylines have no Node menu items yet (Split on a polyline would make two elements: needs the element creation work)
   - DONE: H/V/L auto-conversion (a segment an edit touches is rewritten as
     H, V or L, whichever fits; the rest keep their command) and the Segment
     type menu (L/Q/C/A; line to cubic puts the handles at 1/3 and 2/3, to

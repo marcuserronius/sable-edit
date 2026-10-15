@@ -18,8 +18,10 @@ const setup = async (page, d) => {
 const D = page => page.locator('#np').getAttribute('d');
 const cmds = d => (d.match(/[A-Za-z]/g) || []).join('');
 const menu = (page, name) => page.getByRole('menuitem', { name: new RegExp('^\\s*\\u2713?\\s*' + name) });
+const node = page => page.getByRole('menuitem', { name: /^\s*\u2713?\s*Node\s*\u25B8?\s*$/ });   // the Node submenu (Node type is inside it)
 const nodeType = async (page, p, type) => {
   await page.mouse.click(p.x, p.y, { button: 'right' });
+  await node(page).hover();
   await menu(page, 'Node type').hover();
   await menu(page, type).click();
 };
@@ -29,6 +31,7 @@ test('the Node type menu is there on every node that has a segment on each side,
   for (const [x, y] of [[60, 40], [100, 100], [160, 100]]) {
     const p = await pt(x, y);
     await page.mouse.click(p.x, p.y, { button: 'right' });
+    await node(page).hover();
     await expect(menu(page, 'Node type')).toBeVisible();
     await page.keyboard.press('Escape');
   }
@@ -71,6 +74,7 @@ test('a closing line made a curve joins the start and the end but adds no node, 
   await page.evaluate(() => { ed.policy = { rules: [{ select: '.edit', can: 'all', cannot: ['nodes.insert'] }] }; });
   const p = await pt(60, 40);
   await page.mouse.click(p.x, p.y, { button: 'right' });
+  await node(page).hover();
   await menu(page, 'Node type').hover();
   await expect(menu(page, 'Smooth')).toBeEnabled();                       // the node count is unchanged: the closing curve ends on the start node
   await menu(page, 'Smooth').click();
