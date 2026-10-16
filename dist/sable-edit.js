@@ -2007,10 +2007,10 @@ var SableEdit = (() => {
       let refs = [], rel = () => {
       }, wasHead = false;
       bind(h, (p0, e) => {
-        if (ctx.penOn && drawM !== null) {
+        if (ctx.penOn) {
           const v = view();
           wasHead = head() === i;
-          if (v && !wasHead && canClose(v.segs, v.head) && subOf(v.segs, v.head).m === v.map(i) && allowed()) {
+          if (v && !e.shiftKey && !wasHead && canClose(v.segs, v.head) && subOf(v.segs, v.head).m === v.map(i) && allowed()) {
             closeGesture(e, v);
             return;
           }

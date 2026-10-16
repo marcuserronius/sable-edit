@@ -184,3 +184,21 @@ test('pressing and dragging a middle node while drawing just moves it; its handl
   await page.mouse.click(e.x, e.y);                                       // a middle node is selected, not an endpoint: the next press starts a new path
   await expect(page.locator('#sketch path')).toHaveCount(2);
 });
+
+test('a path with several subpaths: with an end node selected, clicking the subpath\'s other end closes it (not only while drawing)', async ({ page }) => {
+  await page.goto('/demo/');
+  await arm(page);
+  const P = [[.2, .3], [.3, .2], [.4, .3], [.35, .45], [.25, .45]], pts = [];
+  for (const [fx, fy] of P) { const p = await at(page, fx, fy); pts.push(p); await page.mouse.click(p.x, p.y); }
+  await pick(page, pts[2], 'Node', 'Split');             // the middle node: two open subpaths, their ends on the same spot
+  expect((await D(page)).match(/M/g)).toHaveLength(2);
+  await drag(page, pts[2], 60, 0); await drag(page, pts[2], -60, 0); // move the two apart: the second subpath's start goes right, the first one's end goes left
+  const e1 = { x: pts[2].x - 60, y: pts[2].y };
+  await page.mouse.click(e1.x, e1.y);                    // that end is still the selection: clicking it finishes the path (and forgets that it was being drawn)
+  await page.mouse.click(e1.x, e1.y);                    // select it again ...
+  await page.mouse.click(pts[0].x, pts[0].y);            // ... and click the other end of the same subpath
+  const d = await D(page);
+  expect(d.match(/Z/gi)).toHaveLength(1);
+  expect(d).toMatch(/Z\s*M/i);                           // the first subpath is the one that closed; the second is still open
+  expect(d.match(/M/gi)).toHaveLength(2);
+});

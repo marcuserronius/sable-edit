@@ -76,9 +76,9 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     }
     let refs=[],rel=()=>{},wasHead=false;
     bind(h,(p0,e)=>{ // a node carries its adjacent bezier handles along, and so does every other selected node
-      if(ctx.penOn&&drawM!==null){ // pen, drawing (a node was added since): the other end of the path being drawn closes it; the end node itself, clicked, finishes
+      if(ctx.penOn){ // pen: with an end node selected, the other end of its open subpath closes it (whether or not this press session added a node: drawM is reset by finishing, rebuilds and Split); the end node itself, clicked, finishes
         const v=view();wasHead=head()===i;
-        if(v&&!wasHead&&canClose(v.segs,v.head)&&subOf(v.segs,v.head).m===v.map(i)&&allowed()){closeGesture(e,v);return}
+        if(v&&!e.shiftKey&&!wasHead&&canClose(v.segs,v.head)&&subOf(v.segs,v.head).m===v.map(i)&&allowed()){closeGesture(e,v);return}
       }
       rel=S.press('node',i,e.shiftKey);layout();
       refs=[];for(const j of halves(S.items)){ // (both halves of a joined node move, each with its own handles)
