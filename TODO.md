@@ -79,6 +79,11 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
       or more segments, which a single path can't hold except as several subpaths meeting)
     - Join / Merge / Split are refused for a shape with any pin (they renumber nodes), as cutting a segment is
     - Polygons and polylines have no Node menu items yet (Split on a polyline would make two elements: needs the element creation work)
+  - DONE: Segment menu (right-click a segment; `splitSegments` / `cutSegments` in `src/node-ops.js`): Segment type, Add Node (midpoint, same type), Break Segment
+    (the segment becomes an M, its two nodes stay). Open follow-ups:
+    - Delete / Backspace on a segment (`deleteSegments`) is the same cut but drops the nodes it leaves alone, while Break Segment keeps them as lone Ms: unify?
+    - Add Node and Break Segment work on a path's segments only; polygon / polyline edges aren't selectable yet (see above)
+    - Ideas: Reverse Direction (`reverseSub` only does open subpaths), Add Node at the pointer (a double-click on the stroke does it), Add Node with a count
   - DONE: H/V/L auto-conversion (a segment an edit touches is rewritten as
     H, V or L, whichever fits; the rest keep their command) and the Segment
     type menu (L/Q/C/A; line to cubic puts the handles at 1/3 and 2/3, to

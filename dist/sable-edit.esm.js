@@ -21,7 +21,7 @@
             (a path whose last point is on its first, Z or not, has one joined node there: one square, both halves move / delete together, handles pair across it; a Z that draws a line leaves two independent nodes. Path edit mode also has node types: corner / smooth / symmetric, on any node with a segment on each side (src/node-type.js: handles go on the average of the two tangents at the node, each keeping its length or, if missing / retracted, getting half the distance to its far node; symmetric: both the same length. Lines become beziers of the other side's kind; arc + line -> quadratic (smooth) or tangent circular arc (symmetric), the arc's tangent staying; arc + bezier -> the handle follows the arc, or the arc becomes one bezier; arc + arc -> single cubics; a quadratic that would unsmooth its far node becomes a cubic; a real closing line is made explicit first); Shift-drag a handle = symmetric, Alt-drag = break the link; an editor can add
             right-click menu items through ctx.menu(f))
             edit mode: double-click / long-press a shape, or ed.edit(); Esc = back to scale, then deselect; ed.mode='edit' still works
-            path segments: right-click > Segment type (L / Q / C / A); lines the editor touches are written H / V / L, shortest first
+            path segments: right-click > Segment > Segment type (L / Q / C / A), Add Node, Break Segment; lines the editor touches are written H / V / L, shortest first
             (Delete / Backspace / Escape do the same while the page has focus, unless keys:false; the 'key' event lets an editor claim them),
             tool (get/set: 'pointer' or a tool id, stays until changed), tools (what is registered),
             penSegment (get/set what the path pen's next node adds: 'auto' | 'L' | 'Q' | 'C' | 'A'),
@@ -278,7 +278,7 @@ function arcGeom(p, e, rx, ry, deg, fa, fs) {
   return { cx, cy, rx, ry, phi, c, s, th1, dth, pt: (t) => [cx + rx * Math.cos(t) * c - ry * Math.sin(t) * s, cy + rx * Math.cos(t) * s + ry * Math.sin(t) * c] };
 }
 function arcFit(P, E, arc, kind, p, opts = {}) {
-  const gap = opts.gap || 0, r32 = (v) => +v.toFixed(3);
+  const gap = opts.gap || 0, r33 = (v) => +v.toFixed(3);
   let [rx, ry, phi, fa, fs] = arc;
   const g0 = arcGeom(P, E, rx, ry, phi, fa, fs);
   if (!g0) return arc;
@@ -347,7 +347,7 @@ function arcFit(P, E, arc, kind, p, opts = {}) {
     if (!X || sh) ry = v;
   }
   phi = ((phi + 180) % 360 + 360) % 360 - 180;
-  return [r32(rx), r32(ry), r32(phi), fa, fs];
+  return [r33(rx), r33(ry), r33(phi), fa, fs];
 }
 var same = (a, b) => Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9;
 var clone = (s) => ({ ...s, pts: s.pts.map((p) => [...p]), ...s.arc ? { arc: [...s.arc] } : {} });
@@ -1874,6 +1874,100 @@ function splitSub(segs, info, tw, i, j, want) {
   if (ring && !base) pieces.push({ start: [...pt(ks.at(-1))], edges: [...edges(ks.at(-1), N), ...edges(0, ks[0])], cut: true });
   return pieces;
 }
+var r32 = (n) => +n.toFixed(3);
+function halve(segs, i, info) {
+  const s = segs[i], { from, to } = info[i] || {};
+  if (!s || s.t === "M" || !from) return null;
+  if (s.t === "Z") return closingLine(segs, i, info) ? [{ t: "L", pts: [mid2(from, to)], dirty: 1 }, { t: "Z", pts: [] }] : null;
+  if (s.t === "L") return [{ t: "L", pts: [mid2(from, to)], dirty: 1 }, { t: "L", pts: [[...to]], dirty: 1 }];
+  if (s.t === "C" || s.t === "Q") {
+    const [a, b] = split([from, ...s.pts], 0.5);
+    return [{ t: s.t, pts: a.slice(1).map((p) => [...p]) }, { t: s.t, pts: b.slice(1).map((p) => [...p]) }];
+  }
+  const g = arcGeom(from, to, ...s.arc);
+  if (!g) return [{ t: "A", arc: [...s.arc], pts: [mid2(from, to)] }, { t: "A", arc: [...s.arc], pts: [[...to]] }];
+  const arc = [r32(g.rx), r32(g.ry), s.arc[2], Math.abs(g.dth) / 2 > Math.PI ? 1 : 0, s.arc[4]];
+  return [{ t: "A", arc, pts: [g.pt(g.th1 + g.dth / 2)] }, { t: "A", arc: [...arc], pts: [[...to]] }];
+}
+function splitSegments(segs, idxs) {
+  const info = segInfo(segs), want = new Set(idxs), out = [], sel = [];
+  segs.forEach((s, i) => {
+    const h = want.has(i) ? halve(segs, i, info) : null;
+    if (!h) out.push(clone2(s));
+    else {
+      sel.push(out.length);
+      out.push(...h);
+    }
+  });
+  return sel.length ? { segs: healSmooth(out), sel } : null;
+}
+function cutSegments(segs, idxs) {
+  const want = new Set(idxs), info = segInfo(segs), tw = twins(segs, info), out = [], sel = [];
+  let did = false, i = 0;
+  while (i < segs.length) {
+    if (segs[i].t !== "M") {
+      out.push(clone2(segs[i]));
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < segs.length && segs[j].t !== "M") j++;
+    const r = cutSub(segs, info, tw, i, j, want);
+    if (!r) {
+      for (let k = i; k < j; k++) out.push(clone2(segs[k]));
+      i = j;
+      continue;
+    }
+    did = true;
+    sel.push(...r.sel.map((k) => out.length + k));
+    out.push(...r.out);
+    i = j;
+  }
+  return did ? { segs: healSmooth(out), sel: [...new Set(sel)].sort((a, b) => a - b) } : null;
+}
+function cutSub(segs, info, tw, i, j, want) {
+  const z = segs.findIndex((s, k) => k > i && k < j && s.t === "Z");
+  if (z >= 0 && z !== j - 1) return null;
+  const L2 = (z >= 0 ? z : j) - 1 - i;
+  if (L2 < 1) return null;
+  const real = z >= 0 && !near2(info[z].from, info[z].to), ring = z >= 0 || tw[i] === i + L2;
+  const E = [null];
+  for (let k = 1; k <= L2; k++) E.push(segs[i + k]);
+  if (real) E.push({ t: "L", pts: [[...info[z].to]], dirty: 1 });
+  const N = E.length - 1, pt = (k) => k === 0 ? segs[i].pts[0] : E[k].pts.at(-1), cut = (k) => want.has(k <= L2 ? i + k : z);
+  const ks = [];
+  for (let k = 1; k <= N; k++) if (cut(k)) ks.push(k);
+  if (!ks.length) return null;
+  const out = [], rep = [], M2 = (k) => {
+    out.push({ t: "M", pts: [[...pt(k)]] });
+    rep[k] = out.length - 1;
+  };
+  if (!ring) {
+    M2(0);
+    for (let k = 1; k <= N; k++) {
+      if (cut(k)) M2(k);
+      else {
+        out.push(clone2(E[k]));
+        rep[k] = out.length - 1;
+      }
+    }
+  } else {
+    const c = ks[0], order = [];
+    for (let k = c + 1; k <= N; k++) order.push(k);
+    for (let k = 1; k <= c; k++) order.push(k);
+    let prev = true;
+    for (const k of order) {
+      if (prev) M2(k - 1);
+      if (cut(k)) prev = true;
+      else {
+        out.push(clone2(E[k]));
+        rep[k % N] = out.length - 1;
+        prev = false;
+      }
+    }
+  }
+  return { out, sel: ks.flatMap((k) => [rep[k - 1], rep[ring ? k % N : k]]) };
+}
 
 // src/widgets/path.js
 Widgets.register((el) => el.tagName === "path", (ctx) => {
@@ -2446,6 +2540,24 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
     write("split:" + ++uid);
     build();
   }
+  function addNodes(js) {
+    const r = splitSegments(segs, js);
+    if (!r) return;
+    segs = r.segs;
+    S.clear();
+    r.sel.forEach((j) => S.pick("node", j, true));
+    write("addn:" + ++uid);
+    build();
+  }
+  function breakSel(js) {
+    const r = cutSegments(segs, js);
+    if (!r) return;
+    segs = r.segs;
+    S.clear();
+    r.sel.forEach((j) => S.pick("node", j, true));
+    write("brk:" + ++uid);
+    build();
+  }
   ctx.menu(({ x, y }) => {
     if (!ctx.can("geometry.edit")) return [];
     const o = ctx.toOverlay({ clientX: x, clientY: y }), at = segs.findIndex((q, j) => q.t !== "Z" && Math.hypot(...T0(segs[j].pts.at(-1)).map((v, k) => v - o[k])) <= ctx.px(9));
@@ -2466,7 +2578,14 @@ Widgets.register((el) => el.tagName === "path", (ctx) => {
         const r = convertSegments(segs, js2, t);
         return { label, checked: cur.size === 1 && cur.has(t), disabled: !!r && nodeCount(r.segs) > nodeCount(segs) && !ctx.can("nodes.insert"), action: () => setSegType(js2, t) };
       };
-      return [{ label: "Segment type", submenu: [it("Line", "L"), it("Quadratic curve", "Q"), it("Cubic curve", "C"), it("Arc", "A")] }];
+      const ad = splitSegments(segs, js2), br = cutSegments(segs, js2), pins2 = ctx.pin.length > 0;
+      return [{ label: "Segment", submenu: [
+        { label: "Segment type", submenu: [it("Line", "L"), it("Quadratic curve", "Q"), it("Cubic curve", "C"), it("Arc", "A")] },
+        { sep: 1 },
+        { label: "Add Node", disabled: !ad || !ctx.can("nodes.insert"), action: () => addNodes(js2) },
+        { label: "Break Segment", disabled: pins2 || !br || nodeCount(br.segs) > nodeCount(segs) && !ctx.can("nodes.insert"), action: () => breakSel(js2) }
+        // (renumbers nodes, so a pin refuses it)
+      ] }];
     }
     const info = segInfo(segs), all = S.kind === "node" ? S.items : [], js = all.filter((j) => nodeTypeAny(segs, j, info, tw)), ts = new Set(js.map((j) => nodeTypeAny(segs, j, info, tw))), kids = [];
     if (!all.length) return [];

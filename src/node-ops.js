@@ -3,8 +3,11 @@
      joinNodes   two unattached nodes (the end of an open subpath, or a lone M): a straight segment between them (or, with `merge`, one node at the
                  average of their positions). Different subpaths become one; the two ends of the same subpath close it.
      splitNodes  a node inside a subpath becomes two: the subpath ends there and a new one starts there with an M. A closed subpath has no ends to
-                 cut at, so cutting it opens it instead (see splitNodes). */
-import {segInfo,healSmooth,twins} from './path-math.js';
+                 cut at, so cutting it opens it instead (see splitNodes).
+   And two that work on segments (the path widget's Segment menu drives them):
+     splitSegments  Add Node: each segment is cut in two at its midpoint, both halves of the same type as the original.
+     cutSegments    Break Segment: each segment becomes an M, so the nodes it joined stay, as the ends of the pieces on either side of it. */
+import {segInfo,healSmooth,twins,arcGeom,closingLine,split as deCasteljau} from './path-math.js';
 import {endKind,reverseSub,subOf,closeSub} from './pen-math.js';
 const clone=s=>({...s,pts:s.pts.map(p=>[...p]),...(s.arc?{arc:[...s.arc]}:{})});
 const near=(a,b)=>Math.abs(a[0]-b[0])<=0.01&&Math.abs(a[1]-b[1])<=0.01;
@@ -106,4 +109,75 @@ function splitSub(segs,info,tw,i,j,want){
   for(let n=0;n+1<ks.length;n++)pieces.push({start:[...pt(ks[n])],edges:edges(ks[n],ks[n+1]),cut:ks[n]>0||base});
   if(ring&&!base)pieces.push({start:[...pt(ks.at(-1))],edges:[...edges(ks.at(-1),N),...edges(0,ks[0])],cut:true}); // the piece that runs through the first node
   return pieces;
+}
+
+/* ---- segments: Add Node and Break Segment ---- */
+const r3=n=>+n.toFixed(3);
+/* segment i cut at its midpoint -> [first half, second half] (the new node is the end of the first half), or null for an M, a Z that draws nothing, or
+   a segment with no start. Lines: the middle. Quadratics and cubics: t = 0.5 (de Casteljau, so the curve is exactly the same). Arcs: half way round
+   the sweep, each half the same ellipse (the radii the spec actually draws with) and sweep, its large-arc flag worked out again (an arc over a half turn
+   has halves that are not). A Z that draws a line gives [an L to the middle, the Z], which then draws the rest. */
+function halve(segs,i,info){
+  const s=segs[i],{from,to}=info[i]||{};if(!s||s.t==='M'||!from)return null;
+  if(s.t==='Z')return closingLine(segs,i,info)?[{t:'L',pts:[mid(from,to)],dirty:1},{t:'Z',pts:[]}]:null;
+  if(s.t==='L')return [{t:'L',pts:[mid(from,to)],dirty:1},{t:'L',pts:[[...to]],dirty:1}];
+  if(s.t==='C'||s.t==='Q'){const [a,b]=deCasteljau([from,...s.pts],.5);return [{t:s.t,pts:a.slice(1).map(p=>[...p])},{t:s.t,pts:b.slice(1).map(p=>[...p])}]}
+  const g=arcGeom(from,to,...s.arc);
+  if(!g)return [{t:'A',arc:[...s.arc],pts:[mid(from,to)]},{t:'A',arc:[...s.arc],pts:[[...to]]}]; // (a degenerate arc is drawn as a line: so are its halves)
+  const arc=[r3(g.rx),r3(g.ry),s.arc[2],Math.abs(g.dth)/2>Math.PI?1:0,s.arc[4]];
+  return [{t:'A',arc,pts:[g.pt(g.th1+g.dth/2)]},{t:'A',arc:[...arc],pts:[[...to]]}];
+}
+/* Add Node: split the segments at idxs (an M is no segment and is skipped; neither is a Z that draws nothing) -> {segs, sel (the new nodes)} or null
+   when none could be. A segment flagged smooth (S / T) loses the flag if the new node changes what its successor reflects. */
+export function splitSegments(segs,idxs){
+  const info=segInfo(segs),want=new Set(idxs),out=[],sel=[];
+  segs.forEach((s,i)=>{
+    const h=want.has(i)?halve(segs,i,info):null;
+    if(!h)out.push(clone(s));else{sel.push(out.length);out.push(...h)}
+  });
+  return sel.length?{segs:healSmooth(out),sel}:null;
+}
+/* Break Segment: every segment at idxs is taken out and an M put in its place, so the two nodes it joined stay, as ends: -> {segs, sel (those nodes)}
+   or null when no segment could be cut. A node left with no segment at all (both of its neighbours cut) stays as a lone M. A closed subpath (a Z, or one
+   whose last point is on its first: a joined node) has no ends, so it is opened instead: it is rewritten to start just after the first cut, run round,
+   and end there, without its Z (the cut's two nodes are the two ends, and a joined node of it is an ordinary one in the middle now). More cuts in the
+   same closed subpath divide it into several. A Z that draws a line is an ordinary segment (an L) from then on. No node is added or lost
+   either way (the cut's two nodes were two already; a joined node is still one), so the node count stays. (Delete / Backspace on a segment is the same cut that drops the
+   nodes it leaves alone; this keeps them.) */
+export function cutSegments(segs,idxs){
+  const want=new Set(idxs),info=segInfo(segs),tw=twins(segs,info),out=[],sel=[];let did=false,i=0;
+  while(i<segs.length){
+    if(segs[i].t!=='M'){out.push(clone(segs[i]));i++;continue}
+    let j=i+1;while(j<segs.length&&segs[j].t!=='M')j++;
+    const r=cutSub(segs,info,tw,i,j,want);
+    if(!r){for(let k=i;k<j;k++)out.push(clone(segs[k]));i=j;continue}
+    did=true;sel.push(...r.sel.map(k=>out.length+k));out.push(...r.out);i=j;
+  }
+  return did?{segs:healSmooth(out),sel:[...new Set(sel)].sort((a,b)=>a-b)}:null;
+}
+/* the subpath [i, j) with its cut segments taken out -> {out (segments), sel (indices into out of the nodes the cuts leave)} or null when none of them is cut.
+   Same chain as splitSub: nodes 0..N, edge k joins node k-1 to node k; in a ring node N is node 0 again. */
+function cutSub(segs,info,tw,i,j,want){
+  const z=segs.findIndex((s,k)=>k>i&&k<j&&s.t==='Z');
+  if(z>=0&&z!==j-1)return null;
+  const L=(z>=0?z:j)-1-i;if(L<1)return null;
+  const real=z>=0&&!near(info[z].from,info[z].to),ring=z>=0||tw[i]===i+L;
+  const E=[null];for(let k=1;k<=L;k++)E.push(segs[i+k]);
+  if(real)E.push({t:'L',pts:[[...info[z].to]],dirty:1});
+  const N=E.length-1,pt=k=>k===0?segs[i].pts[0]:E[k].pts.at(-1),cut=k=>want.has(k<=L?i+k:z);
+  const ks=[];for(let k=1;k<=N;k++)if(cut(k))ks.push(k);
+  if(!ks.length)return null;
+  const out=[],rep=[],M=k=>{out.push({t:'M',pts:[[...pt(k)]]});rep[k]=out.length-1};
+  if(!ring){ // a chain: an M at the start, and one in place of each cut
+    M(0);
+    for(let k=1;k<=N;k++){if(cut(k))M(k);else{out.push(clone(E[k]));rep[k]=out.length-1}}
+  }else{ // a ring: start just after the first cut, so no piece wraps round; an M wherever the edge before was cut
+    const c=ks[0],order=[];for(let k=c+1;k<=N;k++)order.push(k);for(let k=1;k<=c;k++)order.push(k);
+    let prev=true;
+    for(const k of order){
+      if(prev)M(k-1);
+      if(cut(k))prev=true;else{out.push(clone(E[k]));rep[k%N]=out.length-1;prev=false}
+    }
+  }
+  return {out,sel:ks.flatMap(k=>[rep[k-1],rep[ring?k%N:k]])};
 }

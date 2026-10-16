@@ -14,6 +14,8 @@ const setup = async (page, d) => {
     document.querySelector('#sketch').append(e); ed.select(e); ed.mode = 'edit';
   }, d);
 };
+/* a menu row by its label (the check mark and submenu arrow are part of its text) */
+const item = (page, name) => page.getByRole('menuitem', { name: new RegExp('^\\s*\\u2713?\\s*' + name + '\\s*\\u25B8?\\s*$') });
 const at = (page, x, y) => page.evaluate(({ x, y }) => {
   const m = document.getElementById('pa').getScreenCTM(), c = document.querySelector('#canvas').getBBox(); x += c.x; y += c.y;
   return { x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f };
@@ -28,8 +30,9 @@ test('right-click a segment: Segment type > Cubic curve turns a line into a curv
   await setup(page, 'M30 140 L 100 60 L 170 140');
   const m = await at(page, 65, 100);
   await page.mouse.click(m.x, m.y, { button: 'right' });
-  await page.getByRole('menuitem', { name: /Segment type/ }).hover();
-  await page.getByRole('menuitem', { name: 'Cubic curve' }).click();
+  await item(page, 'Segment').hover();
+  await item(page, 'Segment type').hover();
+  await item(page, 'Cubic curve').click();
   expect(await d(page)).toMatch(/^M30 140 C/);
   expect(await page.evaluate(() => ed.selection)).toEqual({ kind: 'segment', items: [1] });
   await page.keyboard.press('Control+z');
@@ -41,4 +44,28 @@ test('an H segment stays H while its node slides along it, and a diagonal become
   const n = await at(page, 100, 140), to = await at(page, 120, 140);
   await page.mouse.move(n.x, n.y); await page.mouse.down(); await page.mouse.move((n.x + to.x) / 2, n.y, { steps: 3 }); await page.mouse.move(to.x, to.y, { steps: 3 }); await page.mouse.up();
   expect(await d(page)).toMatch(/^M30 140 H\d+(\.\d)? L/);
+});
+
+test('Segment > Add Node splits the segment at its midpoint; the new node is selected; undo is one step', async ({ page }) => {
+  await setup(page, 'M30 140 L 170 60');
+  const m = await at(page, 100, 100);
+  await page.mouse.click(m.x, m.y, { button: 'right' });
+  await item(page, 'Segment').hover();
+  await item(page, 'Add Node').click();
+  expect(await d(page)).toBe('M30 140 L100 100 L170 60');
+  expect(await page.evaluate(() => ed.selection)).toEqual({ kind: 'node', items: [1] });
+  await page.keyboard.press('Control+z');
+  expect(await d(page)).toBe('M30 140 L 170 60');
+});
+
+test('Segment > Break Segment turns the segment into an M and selects the two nodes it joined', async ({ page }) => {
+  await setup(page, 'M30 140 L 100 60 L 170 140 L 240 60');
+  const m = await at(page, 135, 100);
+  await page.mouse.click(m.x, m.y, { button: 'right' });
+  await item(page, 'Segment').hover();
+  await item(page, 'Break Segment').click();
+  expect(await d(page)).toBe('M30 140 L100 60 M170 140 L240 60');
+  expect(await page.evaluate(() => ed.selection)).toEqual({ kind: 'node', items: [1, 2] });
+  await page.keyboard.press('Control+z');
+  expect(await d(page)).toBe('M30 140 L 100 60 L 170 140 L 240 60');
 });

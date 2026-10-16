@@ -5,7 +5,7 @@ import {pathNodes,pinnedIdx} from '../policy.js';
 import {selection} from '../selection.js';
 import {subOf,endKind,reverseSub,penNode,canClose,closeSub} from '../pen-math.js';
 import {nodeTypeAny,setNodeTypes} from '../node-type.js';
-import {unattached,joinNodes,splitNodes} from '../node-ops.js';
+import {unattached,joinNodes,splitNodes,splitSegments,cutSegments} from '../node-ops.js';
 /* Path widget: nodes (squares) + bezier handles (dots). Drag to edit; Shift while dragging a
    cubic handle mirrors its partner; double-click the path to add a node, a node to delete it. The policy can take those two
    away (nodes.insert / nodes.delete) and pin nodes: a pinned node is drawn grey and can't be dragged or deleted (its bezier
@@ -24,8 +24,9 @@ import {unattached,joinNodes,splitNodes} from '../node-ops.js';
    (the subpath is cut at the node; see src/node-ops.js). A path may have several subpaths (M / m): each is edited like a path of its own, but all
    of them are one shape, with every node drawn and selectable together. A subpath that ends where it starts has one joined node there.
    Pen mode (the Path tool, ctx.penOn; see pen() below): a press on empty canvas adds a node after the selected endpoint, a drag pulls its handles.
-   Right-click a segment for Segment type > Line / Quadratic curve / Cubic curve / Arc. Lines are written H / V / L, whichever is shortest, for
-   the segments an edit touches; the others keep the command they had. */
+   Right-click a segment for the Segment menu: Segment type > Line / Quadratic curve / Cubic curve / Arc, Add Node (each selected segment is cut in
+   two at its midpoint, same type) and Break Segment (each becomes an M: the nodes it joined stay, as ends of the pieces either side of it; see
+   src/node-ops.js). Lines are written H / V / L, whichever is shortest, for the segments an edit touches; the others keep the command they had. */
 Widgets.register(el=>el.tagName==='path',ctx=>{
   const el=ctx.el,g=mk('g'); ctx.overlay.append(g);
   let segs=parsePath(el.getAttribute('d')||''),tw=[],items=[],lines=[],hit,gh,sg,pv,dead=false,mv0=false,mv1=false,arcs=[],pinned=new Set(); // mv*: did the last two gestures drag? pinned: segment indices of pinned nodes
@@ -296,6 +297,16 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     const r=splitNodes(segs,js);if(!r)return;
     segs=r.segs;S.clear();r.sel.forEach(j=>S.pick('node',j,true));write('split:'+(++uid));build();
   }
+  /* Segment > Add Node: the nodes it makes are the selection (needs nodes.insert, as double-clicking the stroke does). Segment > Break Segment: the
+     nodes the cut leaves are the selection, so two of them can be joined again straight away. */
+  function addNodes(js){
+    const r=splitSegments(segs,js);if(!r)return;
+    segs=r.segs;S.clear();r.sel.forEach(j=>S.pick('node',j,true));write('addn:'+(++uid));build();
+  }
+  function breakSel(js){
+    const r=cutSegments(segs,js);if(!r)return;
+    segs=r.segs;S.clear();r.sel.forEach(j=>S.pick('node',j,true));write('brk:'+(++uid));build();
+  }
   ctx.menu(({x,y})=>{
     if(!ctx.can('geometry.edit'))return [];
     const o=ctx.toOverlay({clientX:x,clientY:y}),at=segs.findIndex((q,j)=>q.t!=='Z'&&Math.hypot(...T0(segs[j].pts.at(-1)).map((v,k)=>v-o[k]))<=ctx.px(9));
@@ -308,7 +319,13 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
       const info=segInfo(segs),js=S.items.filter(j=>segs[j]&&segs[j].t!=='M'&&(segs[j].t!=='Z'||closingLine(segs,j,info))),cur=new Set(js.map(j=>segs[j].t==='Z'?'L':segs[j].t)); // (a Z that draws a line is a line)
       if(!js.length)return [];
       const it=(label,t)=>{const r=convertSegments(segs,js,t);return {label,checked:cur.size===1&&cur.has(t),disabled:!!r&&nodeCount(r.segs)>nodeCount(segs)&&!ctx.can('nodes.insert'),action:()=>setSegType(js,t)}};
-      return [{label:'Segment type',submenu:[it('Line','L'),it('Quadratic curve','Q'),it('Cubic curve','C'),it('Arc','A')]}];
+      const ad=splitSegments(segs,js),br=cutSegments(segs,js),pins=ctx.pin.length>0;
+      return [{label:'Segment',submenu:[
+        {label:'Segment type',submenu:[it('Line','L'),it('Quadratic curve','Q'),it('Cubic curve','C'),it('Arc','A')]},
+        {sep:1},
+        {label:'Add Node',disabled:!ad||!ctx.can('nodes.insert'),action:()=>addNodes(js)},
+        {label:'Break Segment',disabled:pins||!br||(nodeCount(br.segs)>nodeCount(segs)&&!ctx.can('nodes.insert')),action:()=>breakSel(js)}, // (renumbers nodes, so a pin refuses it)
+      ]}];
     }
     const info=segInfo(segs),all=S.kind==='node'?S.items:[],js=all.filter(j=>nodeTypeAny(segs,j,info,tw)),ts=new Set(js.map(j=>nodeTypeAny(segs,j,info,tw))),kids=[];
     if(!all.length)return [];
