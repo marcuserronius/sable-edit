@@ -11,7 +11,7 @@ import {polyEnd,polyAdd,headAfter} from '../pen-math.js';
    them (never below 3 vertices for a polygon, 2 for a polyline); Escape clears. Edges can't be selected yet: cutting one splits
    the element in two, which needs the object-conversion work on the TODO. Moving the whole shape is the body drag's job (body.js). The policy can take adding and
    deleting away (nodes.insert / nodes.delete) and pin vertices: a pinned vertex is drawn grey and can't be dragged or deleted.
-   Pen mode (the Polygon / Polyline tool, ctx.penOn; see pen below): a press on empty canvas adds a vertex after the selected one. */
+   Pen mode (the Polygon / Polyline tool, ctx.penOn; see pen below): a press on empty canvas adds a vertex after the selected one (Shift holds the new edge on a multiple of 45 degrees). */
 for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ctx=>{
   const el=ctx.el,closed=tag==='polygon',g=mk('g'),A=(e,o)=>{for(const k in o)e.setAttribute(k,o[k])}; ctx.overlay.append(g);
   const parse=()=>{const n=(el.getAttribute('points')||'').match(/[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g)||[],p=[];
@@ -98,7 +98,7 @@ for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ct
     clear(){S.clear();drawing=false;layout()}, // the shape is done: no vertex selected, so the next press starts a new one
     hover(e){ // the rubber band: the edge(s) a press here would add (a polygon's new vertex goes in between the head and the next one)
       const h=e&&ctx.penOn?head():-1;if(h<0){pv.style.display='none';return}
-      const q=ctx.fit(ctx.toLocal(e)),line=[pts[h],q],M=ctx.matrix();
+      const q=ctx.place(e,pts[h]),line=[pts[h],q],M=ctx.matrix();
       if(closed&&pts.length>1)line.push(pts[(h+1)%pts.length]);
       A(pv,{points:line.map(z=>z.join(',')).join(' '),transform:`matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})`});pv.style.display='';
     },
@@ -107,19 +107,20 @@ for(const tag of ['polygon','polyline'])Widgets.register(el=>el.tagName===tag,ct
     begin(e,o){
       pv.style.display='none';
       const key=o.key,thr=e.pointerType==='touch'?8:3,x0=e.clientX,y0=e.clientY,h0=head();let idx=0,wrote=false,dragging=false;
+      const from=!o.first&&h0>=0&&pts[h0]?[...pts[h0]]:null; // the vertex the new one comes from: Shift holds the edge on a multiple of 45 degrees
       if(o.first){
         pts.splice(0,pts.length,ctx.fit(ctx.toLocal(e)));drawing=true;
         if(!write(key)||!pts.length)return null;
       }else{
         if(!allowed())return null;
-        const r=polyAdd(pts,h0,ctx.fit(ctx.toLocal(e)),closed);
+        const r=polyAdd(pts,h0,ctx.place(e,from),closed);
         pts.splice(0,pts.length,...r.pts);idx=r.idx;drawing=true;S.pick('node',idx);
         if(!write(key))return null; // (refused: write has put the document's points back)
       }
       wrote=true;S.pick('node',idx);build();
       return {move(_,ev){
         if(dead||!pts[idx]||(!dragging&&Math.hypot(ev.clientX-x0,ev.clientY-y0)<=thr))return;dragging=true;
-        pts[idx]=ctx.fit(ctx.toLocal(ev));write(key);layout();
+        pts[idx]=ctx.place(ev,from);write(key);layout();
       },end(){layout();return null},cancel(){ // Esc during the press: it never happened (what it added is the newest undo step)
         if(wrote)ctx.undo();if(dead)return;if(h0>=0)S.pick('node',h0);layout();
       }};

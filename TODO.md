@@ -28,8 +28,12 @@ move a pinned node is refused or clamped, so for a pinned shape the allowed tran
   - Needs the pen tools first (path, polygon, polyline): a tool that lives past one press-drag-release, click-to-add-nodes, finish on
     Enter / double-click / Esc; the same lifecycle change the merge needs
     - DONE (pen stage 1): the path pen (`src/pen-math.js`, the path widget's pen mode, `pen:true` tools in attach.js). Also DONE: the polygon and polyline pens (a polygon inserts the new vertex after the selected vertex; a polyline continues from either end)
-    - Pen follow-ups: Shift to constrain the angle; a drag at the closing node doesn't yet smooth the joint with the first segment's handle
-      ("extend but not create" and starting a path on top of a stroke, with Alt, are done)
+    - DONE: Shift constrains the pens' angle (the new node, or vertex, on a multiple of 45 degrees from the one it follows, as seen on screen; a
+      handle being pulled likewise from its node; `snapAngle` in `src/pen-math.js`, `ctx.place` / `ctx.constrain`), and a drag at the closing node
+      smooths the joint with the first segment's handle ("extend but not create" and starting a path on top of a stroke, with Alt, are done too)
+    - Pen follow-ups: Shift on a snap grid: the grid wins, so the angle holds only where the grid allows (a point on the ray that is also on the
+      grid would need a search); a Shift-press on the path's other end selects it, not closes (existing behaviour, kept: a Shift-press is plain editing);
+      the closing drag's first segment is only given a handle in Auto / Cubic mode (Quadratic and arc segments have none to give)
   - DONE: sticky vs once decided: every tool is sticky; the use-once code and `ed.useTool` are gone
   - DONE (Stage 2, part 1): press on an object of the tool's own type edits it; anywhere else creates (a rect, circle, ellipse or line: its body; the pens: its
     stroke, with Alt to draw on top of one anyway); a created shape is selected, in edit mode, with the tool still armed

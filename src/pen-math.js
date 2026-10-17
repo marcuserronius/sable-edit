@@ -4,6 +4,13 @@ import {arcThrough,convertSegment,healSmooth,twinOf} from './path-math.js';
 const cp=s=>({...s,pts:s.pts.map(p=>[...p]),...(s.arc?{arc:[...s.arc]}:{})});
 const refl=(h,n)=>[2*n[0]-h[0],2*n[1]-h[1]],mid=(a,b)=>[(a[0]+b[0])/2,(a[1]+b[1])/2],dist=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]),r3=n=>+n.toFixed(3);
 
+/* Shift in the pens: p brought onto the nearest multiple of `step` degrees as seen from `from`, at the same distance from it. */
+export function snapAngle(from,p,step=45){
+  const dx=p[0]-from[0],dy=p[1]-from[1],d=Math.hypot(dx,dy);if(d<1e-12)return [...p];
+  const u=step*Math.PI/180,a=Math.round(Math.atan2(dy,dx)/u)*u,z=v=>Math.abs(v)<1e-12?0:v; // (cos 90 degrees is not quite 0)
+  return [from[0]+z(d*Math.cos(a)),from[1]+z(d*Math.sin(a))];
+}
+
 /* the subpath node/segment j belongs to: {m: its M, last: its last drawing segment (m for a lone M), closed: it ends in Z} */
 export function subOf(segs,j){
   let m=j;while(m>0&&segs[m].t!=='M')m--;
@@ -58,14 +65,23 @@ export function penNode(segs,head,p,o={}){
 /* can the subpath whose end node is `head` be closed? It needs a segment to close (two nodes): a curve back to the start makes a perfectly good
    balloon of two nodes. (A straight two-node path closes to a line there and back, which is legal and merely flat.) */
 export function canClose(segs,head){const {m,last,closed}=subOf(segs,head);return !closed&&head===last&&last>m&&twinOf(segs,head)<0} // (a path that already ends on its start is a loop already)
-/* close it: a final curve back to the start when the kind, a pending handle or a drag (o.drag, as for penNode) asks for one, then Z (a straight closing line is just the Z).
+/* close it: a final curve back to the start when the kind, a pending handle or a drag (o.drag, o.alt, as for penNode) asks for one, then Z (a straight closing
+   line is just the Z). A drag at the closing node does what it does at any other node: the node is symmetric (Alt: broken), the incoming handle is the closing
+   segment's, and the outgoing handle, which at any other node would go to the next segment, goes to the subpath's first segment (a line there becomes a cubic;
+   a quadratic or an arc has no handle of its own to give). The start node is then a joined node whose two handles mirror each other.
    -> {segs, idx (the start node: a closed subpath has no endpoints, so the pen has nothing to continue from)} or null */
 export function closeSub(segs,head,o={}){
   if(!canClose(segs,head))return null;
   const {m}=subOf(segs,head),kind=o.kind||'auto',curved=kind==='Q'||kind==='C'||kind==='A'||(kind==='auto'&&(o.out||o.drag));
   let res=segs,at=head;
-  if(curved){const r=penNode(segs,head,segs[m].pts[0],{kind,out:o.out,drag:o.drag});if(r){res=r.segs;at=r.idx}} // (no curve possible: a plain Z)
+  let joint=null;
+  if(curved){const r=penNode(segs,head,segs[m].pts[0],{kind,out:o.out,drag:o.drag,alt:o.alt});if(r){res=r.segs;at=r.idx;joint=r.out}} // (no curve possible: a plain Z)
   res=res.map(cp);res.splice(at+1,0,{t:'Z',pts:[]});
+  if(joint){ // the handle the drag pulled out of the start node belongs to the first segment
+    const f=res[m+1];
+    if(f&&f.t==='C')f.pts[0]=[...joint.pt];
+    else if(f&&f.t==='L')res[m+1]={t:'C',pts:[[...joint.pt],[...f.pts[0]],[...f.pts[0]]],dirty:1};
+  }
   return {segs:healSmooth(res),idx:m};
 }
 

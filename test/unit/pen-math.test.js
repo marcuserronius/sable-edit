@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePath, serPath, arcGeom, retype } from '../../src/path-math.js';
-import { subOf, endKind, reverseSub, penNode, canClose, closeSub, polyCount, polyEnd, polyAdd, headAfter } from '../../src/pen-math.js';
+import { subOf, endKind, reverseSub, penNode, canClose, closeSub, snapAngle, polyCount, polyEnd, polyAdd, headAfter } from '../../src/pen-math.js';
 import { Tools } from '../../src/tools.js';
 import '../../src/tools/path.js';
 import '../../src/tools/polygon.js';
@@ -96,7 +96,41 @@ test('canClose / closeSub: needs a segment; a straight close is just Z; a pendin
   assert.equal(D(c.segs), 'M0 0 L10 0 L10 10 C10 15 0 0 0 0 Z');
   assert.equal(D(closeSub(three, 2, { kind: 'Q' }).segs), 'M0 0 L10 0 L10 10 Q5 5 0 0 Z');
   assert.equal(closeSub(P('M0 0 L5 5 L9 0 Z'), 2), null);          // already closed
-  assert.equal(D(closeSub(three, 2, { drag: [5, 12] }).segs), 'M0 0 L10 0 L10 10 C10 10 -5 -12 0 0 Z'); // a drag at the closing node pulls a handle (incoming = mirror of it)
+  // a drag at the closing node pulls a handle: the incoming control is its mirror, and the handle itself is the first segment's outgoing one (as at any node)
+  assert.equal(D(closeSub(three, 2, { drag: [5, 12] }).segs), 'M0 0 C5 12 10 0 10 0 L10 10 C10 10 -5 -12 0 0 Z');
+});
+
+test('closeSub with a drag: the closing node is a joined node, symmetric (Alt: a corner), and its first segment takes the handle', () => {
+  const three = P('M0 0 L10 0 L10 10');
+  const r = closeSub(three, 2, { drag: [5, 12] });
+  assert.deepEqual(r.segs[1].pts[0], [5, 12]);                      // the first segment's outgoing handle is the one that was pulled
+  assert.deepEqual(r.segs[3].pts[1], [-5, -12]);                    // the closing segment's incoming handle is its mirror about the start
+  assert.equal(r.idx, 0);
+  const alt = closeSub(three, 2, { drag: [5, 12], alt: true });     // Alt breaks the node: the incoming handle stays on it, the outgoing one is still pulled
+  assert.deepEqual(alt.segs[1].pts[0], [5, 12]); assert.equal(alt.segs[3].t, 'L');   // (as at any node: an Alt-drag with no pending handle adds a line, whose outgoing side is the pulled handle)
+  // a first segment that is already a cubic keeps its other control and just gets the new handle
+  const cub = closeSub(P('M0 0 C1 1 9 -1 10 0 L10 10'), 2, { drag: [3, 4] });
+  assert.equal(D(cub.segs), 'M0 0 C3 4 9 -1 10 0 L10 10 C10 10 -3 -4 0 0 Z');
+  // a first segment that is a quadratic or an arc has no handle of its own to give: it stays as it was
+  assert.equal(D(closeSub(P('M0 0 Q5 5 10 0 L10 10'), 2, { drag: [3, 4] }).segs), 'M0 0 Q5 5 10 0 L10 10 C10 10 -3 -4 0 0 Z');
+  // a drag in Line / Quadratic / Arc mode pulls no handle out of the start node (those kinds never leave a pending handle)
+  assert.equal(D(closeSub(three, 2, { kind: 'Q', drag: [5, 12] }).segs), 'M0 0 L10 0 L10 10 Q5 12 0 0 Z');
+  // no drag, nothing changes: the first segment stays a line
+  assert.equal(D(closeSub(three, 2, { kind: 'C' }).segs), 'M0 0 L10 0 L10 10 C10 10 0 0 0 0 Z');
+});
+
+test('snapAngle: the nearest multiple of 45 degrees from a point, at the same distance', () => {
+  const near = (a, b) => assert.ok(Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9, JSON.stringify(a) + ' vs ' + JSON.stringify(b));
+  near(snapAngle([0, 0], [10, 1]), [Math.hypot(10, 1), 0]);          // nearly horizontal: horizontal, as far from the start as before
+  near(snapAngle([0, 0], [1, 10]), [0, Math.hypot(10, 1)]);          // nearly vertical
+  near(snapAngle([0, 0], [10, 9]), [Math.hypot(10, 9) / Math.SQRT2, Math.hypot(10, 9) / Math.SQRT2]);   // nearly diagonal
+  near(snapAngle([5, 5], [-5, 5]), [-5, 5]);                         // already on a multiple: unchanged (and not relative to the origin)
+  near(snapAngle([5, 5], [5, -20]), [5, -20]);
+  near(snapAngle([2, 3], [2, 3]), [2, 3]);                           // no distance, no angle
+  near(snapAngle([0, 0], [-7, 0.1]), [-Math.hypot(7, 0.1), 0]);
+  const q = snapAngle([0, 0], [10, 4], 15);                          // another step
+  assert.ok(Math.abs(Math.atan2(q[1], q[0]) * 180 / Math.PI - 15) < 1e-9);   // atan2(4,10) = 21.8 degrees: nearest multiple of 15 is 15
+  assert.equal(snapAngle([0, 0], [0, 10])[0], 0);                    // no cos(90 degrees) = 6e-16 noise
 });
 
 test('the path pen tool is registered as a pen tool, and says what a drawable path is', () => {

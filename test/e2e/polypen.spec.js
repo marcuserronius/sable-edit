@@ -166,3 +166,26 @@ test('policy: without nodes.insert no polygon is started, and the host hears why
   await expect(page.locator('#sketch polygon')).toHaveCount(0);
   expect(await page.evaluate(() => window.__denied)).toContain('nodes.insert');
 });
+
+test('Shift holds a new vertex on a multiple of 45 degrees from the vertex it follows, while it is placed and while it is dragged', async ({ page }) => {
+  await page.goto('/demo/');
+  await arm(page, 'Polygon');
+  const a = await at(page, .2, .3), b = await at(page, .5, .3), c = await at(page, .35, .6);
+  await page.mouse.click(a.x, a.y);
+  await page.keyboard.down('Shift');
+  await page.mouse.click(b.x, b.y + 12);                  // a little below the horizontal
+  await page.keyboard.up('Shift');
+  await page.mouse.click(c.x, c.y);
+  let P = await pts(page, 'polygon');
+  expect(P.length).toBe(3);
+  expect(Math.abs(P[1][1] - P[0][1])).toBeLessThan(.01);  // the second vertex is level with the first
+  await page.mouse.move(c.x + 40, c.y + 30); await page.mouse.down();
+  await page.keyboard.down('Shift');
+  await page.mouse.move(c.x + 90, c.y + 70, { steps: 4 });
+  await page.mouse.up(); await page.keyboard.up('Shift');
+  P = await pts(page, 'polygon');
+  expect(P.length).toBe(4);
+  const last = P[3], prev = P[2];                         // the new vertex follows the third one
+  const dx = Math.abs(last[0] - prev[0]), dy = Math.abs(last[1] - prev[1]);
+  expect(dx < .01 || dy < .01 || Math.abs(dx - dy) < .01).toBe(true);
+});

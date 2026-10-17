@@ -23,7 +23,8 @@ import {unattached,joinNodes,splitNodes,splitSegments,cutSegments} from '../node
    Node > Join with segment / Merge (two unattached nodes: a line between them, or one node at their average position) and Node > Split
    (the subpath is cut at the node; see src/node-ops.js). A path may have several subpaths (M / m): each is edited like a path of its own, but all
    of them are one shape, with every node drawn and selectable together. A subpath that ends where it starts has one joined node there.
-   Pen mode (the Path tool, ctx.penOn; see pen() below): a press on empty canvas adds a node after the selected endpoint, a drag pulls its handles.
+   Pen mode (the Path tool, ctx.penOn; see pen() below): a press on empty canvas adds a node after the selected endpoint, a drag pulls its handles; Shift holds the new node, and then the
+   handle, on a multiple of 45 degrees (as seen on screen) from the node it comes from.
    Right-click a segment for the Segment menu: Segment type > Line / Quadratic curve / Cubic curve / Arc, Add Node (each selected segment is cut in
    two at its midpoint, same type) and Break Segment (each becomes an M: the nodes it joined stay, as ends of the pieces either side of it; see
    src/node-ops.js). Lines are written H / V / L, whichever is shortest, for the segments an edit touches; the others keep the command they had. */
@@ -208,7 +209,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     ln(()=>pendNow()&&segs[head()].pts.at(-1),()=>pendNow()&&pendNow().pt,{});
     const h=mk('circle',{style:'pointer-events:all;cursor:move',fill:'var(--panel,#fff)',stroke:'var(--acc,#2f6fed)'});
     items.push({el:h,get:()=>ctx.penOn&&pendNow()?pendNow().pt:null,r:3.5});gh.append(h);
-    bind(h,()=>{},p=>{const q=pendNow(),k=head();if(!q)return;q.pt=p;const s=segs[k];if(q.sym&&s.t==='C')s.pts[1]=[2*s.pts[2][0]-p[0],2*s.pts[2][1]-p[1]]}); // a symmetric node: its incoming control follows
+    bind(h,()=>{},(p,p0,ev)=>{const q=pendNow(),k=head();if(!q)return;const s=segs[k];q.pt=ev.shiftKey?ctx.fit(ctx.constrain(s.pts.at(-1),p)):p;p=q.pt;if(q.sym&&s.t==='C')s.pts[1]=[2*s.pts[2][0]-p[0],2*s.pts[2][1]-p[1]]}); // a symmetric node: its incoming control follows
   }
   function restoreHead(){ // undo / redo walk the drawing: the selection goes to the end of the subpath being drawn, wherever it was left
     if(drawM===null||!segs[drawM]||segs[drawM].t!=='M')return;
@@ -223,9 +224,10 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
      after the first rebuild, so the drag is followed on the window. */
   function closeGesture(e,v){
     const key='penc:'+(++uid),thr=e.pointerType==='touch'?8:3,x0=e.clientX,y0=e.clientY,out=pendNow();let dragging=false;
-    const run=h=>{const r=closeSub(v.segs,v.head,{kind:ctx.penSeg,out,drag:h});if(!r)return false;segs=r.segs;S.clear();pends.length=0;drawM=null;if(!write(key))return false;build();return true};
+    const run=(h,alt)=>{const r=closeSub(v.segs,v.head,{kind:ctx.penSeg,out,drag:h,alt});if(!r)return false;segs=r.segs;S.clear();if(h)S.pick('node',r.idx);pends.length=0;drawM=null;if(!write(key))return false;build();return true}; // (a drag leaves the start node selected, so its two handles are drawn as at any node being dragged)
     if(!run(null))return;
-    const mv=ev=>{if(dead)return up();if(!dragging&&Math.hypot(ev.clientX-x0,ev.clientY-y0)<=thr)return;dragging=true;run(ctx.fit(ctx.toLocal(ev)))};
+    const start=v.segs[subOf(v.segs,v.head).m].pts[0]; // (the closing node: Shift holds the handle on a multiple of 45 degrees from it)
+    const mv=ev=>{if(dead)return up();if(!dragging&&Math.hypot(ev.clientX-x0,ev.clientY-y0)<=thr)return;dragging=true;run(ctx.place(ev,start),ev.altKey)};
     const up=()=>{window.removeEventListener('pointermove',mv);window.removeEventListener('pointerup',up);window.removeEventListener('pointercancel',up)};
     window.addEventListener('pointermove',mv);window.addEventListener('pointerup',up);window.addEventListener('pointercancel',up);
   }
@@ -235,7 +237,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
     close(){const v=view();return !!v&&allowed()&&doClose(v)},
     clear(){S.clear();pends.length=0;drawM=null;layout()}, // the path is done: no node selected, so the next press starts a new one
     hover(e){ // the rubber band: the segment a press here would add
-      const v=e&&ctx.penOn?view():null,r=v&&penNode(v.segs,v.head,ctx.fit(ctx.toLocal(e)),{kind:ctx.penSeg,out:pendNow()}),d=r&&segD(r.segs,r.idx);
+      const v=e&&ctx.penOn?view():null,r=v&&penNode(v.segs,v.head,ctx.place(e,v.segs[v.head].pts.at(-1)),{kind:ctx.penSeg,out:pendNow()}),d=r&&segD(r.segs,r.idx);
       if(!d){pv.style.display='none';return}
       const M=ctx.matrix();A(pv,{d,transform:`matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})`});pv.style.display='';
     },
@@ -250,12 +252,13 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
         wrote=true;S.pick('node',0);build();
         return {move(_,ev){
           if(!dragging&&Math.hypot(ev.clientX-x0,ev.clientY-y0)<=thr)return;dragging=true; // the first node has no incoming side: the drag only pulls its outgoing handle
-          setPend(segs[0].pts[0],{pt:ctx.fit(ctx.toLocal(ev)),sym:false});layout();
+          setPend(segs[0].pts[0],{pt:ctx.place(ev,segs[0].pts[0]),sym:false});layout();
         },end(){layout();return null},cancel(){ctx.undo()}};
       }
       if(!allowed())return null;
       const v=view();if(!v)return null;
       const base=v.segs,hd=v.head,out=pendNow();
+      p=ctx.place(e,base[hd].pts.at(-1)); // Shift: the new node on a multiple of 45 degrees from the one it continues
       const apply=(h,alt)=>{
         const r=penNode(base,hd,p,{kind:ctx.penSeg,out,drag:h,alt});if(!r){dead=true;return}
         segs=r.segs;S.pick('node',r.idx);drawM=subOf(segs,r.idx).m;
@@ -268,7 +271,7 @@ Widgets.register(el=>el.tagName==='path',ctx=>{
       return {move(_,ev){
         if(dead)return;
         if(!dragging&&Math.hypot(ev.clientX-x0,ev.clientY-y0)<=thr)return;dragging=true;
-        apply(ctx.fit(ctx.toLocal(ev)),ev.altKey);
+        apply(ctx.place(ev,p),ev.altKey); // Shift: the handle on a multiple of 45 degrees from the new node
       },end(){layout();return null},cancel(){ // Esc during the press: it never happened (the node it added is the newest undo step)
         if(wrote)ctx.undo();if(newPt)setPend(newPt,null);S.pick('node',h0);layout();
       }};

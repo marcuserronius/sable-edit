@@ -8,6 +8,7 @@ import {Tools} from './tools.js';
 import {openMenu as openMenuUI} from './menu.js';
 import {compilePolicy,checkWrites,canSet,modeOk,OPEN,checkConvert,GEO} from './policy.js';
 import {convertShape,KINDS,LABELS} from './convert.js';
+import {snapAngle} from './pen-math.js';
 const MODES=['scale','rotate','edit'];
 export function attach(svg,opts={}){
   const PRIM=opts.selector||'path,rect,circle,ellipse,line,polyline,polygon,text', root=opts.root||svg;
@@ -172,6 +173,12 @@ export function attach(svg,opts={}){
         /* a point the pen is about to add, brought onto the policy's grid and inside its walls: the policy leaves added nodes alone (it judges edits
            to existing ones), and the pen is nothing but added nodes */
         fit:q=>fitWith(perms(el),q,ownM(el)),
+        /* Shift in the pens: q onto the nearest multiple of 45 degrees as seen from `from` (both in the shape's coordinates; the angle is the one on screen,
+           whatever transform the shape has) */
+        constrain(from,q){const M=matrixFor(el),T=z=>{const r=new DOMPoint(z[0],z[1]).matrixTransform(M);return [r.x,r.y]},r=snapAngle(T(from),T(q)),b=new DOMPoint(r[0],r[1]).matrixTransform(M.inverse());return [b.x,b.y]},
+        /* where the pen puts a point for pointer event ev: on the policy's grid and inside its walls, and with Shift held on a multiple of 45 degrees from
+           `from` (the grid and walls get the last word, so on a grid the angle holds where the grid allows) */
+        place(ev,from){const q=this.fit(this.toLocal(ev));return ev.shiftKey&&from?this.fit(this.constrain(from,q)):q}, // (called as a method of ctx)
         deny:(cap,reason)=>emit('denied',{el,attr:'d',cap,reason,src:'widget'}), // a refusal that isn't a write (the pen won't continue a pinned shape)
         penRecent:()=>performance.now()-lastPenAdd<600, // the pen added a node a moment ago (a double-click on it is not a delete)
         penFinish:()=>penFinish(), // the pen's "this path is done": deselect its node, drop it if it never got a segment
@@ -381,14 +388,18 @@ export function attach(svg,opts={}){
   };
   menuB.push(convertItems);
   /* hover (mouse / pen, not touch): the cursor says edit, continue or new; a pen also draws the dashed rubber band of its next segment */
-  const onPenHover=e=>{ // (any armed tool) over a shape it would edit the cursor is the plain arrow; a pen also shows its rubber band
+  let hov=null; // the last pointer position over the canvas (a snapshot: the rubber band follows Shift going down or up without the pointer moving)
+  const hoverPen=e=>{ // (any armed tool) over a shape it would edit the cursor is the plain arrow; a pen also shows its rubber band
     const T=Tools.get(tool);if(!T||gesture||e.pointerType==='touch')return;
     const over=!ov.contains(e.target)&&!!editPick(T,e);
     if(T.pen){const pn=layer&&layer.pen;svg.style.cursor=over?'default':pn&&pn.canContinue()?'crosshair':'cell';pn&&pn.hover(over||ov.contains(e.target)?null:e)}
     else svg.style.cursor=over?'default':T.cursor||'crosshair';
   };
-  const onPenLeave=()=>{layer&&layer.pen&&layer.pen.hover(null)};
+  const onPenHover=e=>{hov={clientX:e.clientX,clientY:e.clientY,pointerType:e.pointerType,target:e.target,altKey:e.altKey,shiftKey:e.shiftKey};hoverPen(hov)};
+  const onPenLeave=()=>{hov=null;layer&&layer.pen&&layer.pen.hover(null)};
+  const onShift=e=>{if(e.key!=='Shift'||e.repeat||!hov||!penOn())return;hov={...hov,shiftKey:e.type==='keydown'};hoverPen(hov)};
   svg.addEventListener('pointermove',onPenHover);svg.addEventListener('pointerleave',onPenLeave);
+  if(opts.keys!==false){addEventListener('keydown',onShift);addEventListener('keyup',onShift)}
   const closeMenu=()=>{menuCtl&&menuCtl.close();menuCtl=null};
   function openMenu(x,y,target=null,shape=target){   // shape: the one the pointer is on, which is the selected shape for a press on its handles
     const items=[];menuB.forEach(f=>{const l=f({x,y,target,shape,editor:api})||[];if(l.length){items.length&&items.push({sep:1});items.push(...l)}});
@@ -405,7 +416,7 @@ export function attach(svg,opts={}){
     setMany(el,attrs,src,o){return batch(()=>{for(const a in attrs)setAttr(el,a,attrs[a],src,undefined,o&&o.force)},'many:'+(++bid))}, // several attributes: checked together, undone together
     undo,redo,clearHistory,get canUndo(){return undoS.length>0},get canRedo(){return redoS.length>0},get selected(){return sel},on,
     refresh(){emit('view')}, changed(el,attr,src='app'){emit('change',{el,attr,src})},
-    destroy(){closeMenu();setTool('pointer');select(null);svg.removeEventListener('pointerdown',toolDown,true);svg.removeEventListener('contextmenu',onCtx);svg.removeEventListener('click',onClick);svg.removeEventListener('dblclick',onDbl);svg.removeEventListener('pointerdown',onLong);lpStop();svg.removeEventListener('pointerdown',onPress);svg.removeEventListener('pointermove',onHover);svg.removeEventListener('pointermove',onPenHover);svg.removeEventListener('pointerleave',onPenLeave);svg.removeEventListener('pointerdown',onDown,true);removeEventListener('keydown',onKey);if(!opts.overlay)ov.remove()},
+    destroy(){closeMenu();setTool('pointer');select(null);svg.removeEventListener('pointerdown',toolDown,true);svg.removeEventListener('contextmenu',onCtx);svg.removeEventListener('click',onClick);svg.removeEventListener('dblclick',onDbl);svg.removeEventListener('pointerdown',onLong);lpStop();svg.removeEventListener('pointerdown',onPress);svg.removeEventListener('pointermove',onHover);svg.removeEventListener('pointermove',onPenHover);svg.removeEventListener('pointerleave',onPenLeave);svg.removeEventListener('pointerdown',onDown,true);removeEventListener('keydown',onKey);removeEventListener('keydown',onShift);removeEventListener('keyup',onShift);if(!opts.overlay)ov.remove()},
     get mode(){return sel?cur():editing?'edit':pref},set mode(m){
       if(!MODES.includes(m)||m===api.mode)return;
       if(m==='edit'&&sel){api.edit();return}

@@ -1500,6 +1500,12 @@ var SableEdit = (() => {
   var mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   var dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   var r3 = (n) => +n.toFixed(3);
+  function snapAngle(from, p, step = 45) {
+    const dx = p[0] - from[0], dy = p[1] - from[1], d = Math.hypot(dx, dy);
+    if (d < 1e-12) return [...p];
+    const u = step * Math.PI / 180, a = Math.round(Math.atan2(dy, dx) / u) * u, z = (v) => Math.abs(v) < 1e-12 ? 0 : v;
+    return [from[0] + z(d * Math.cos(a)), from[1] + z(d * Math.sin(a))];
+  }
   function subOf(segs, j) {
     let m = j;
     while (m > 0 && segs[m].t !== "M") m--;
@@ -1566,15 +1572,22 @@ var SableEdit = (() => {
     if (!canClose(segs, head)) return null;
     const { m } = subOf(segs, head), kind = o.kind || "auto", curved = kind === "Q" || kind === "C" || kind === "A" || kind === "auto" && (o.out || o.drag);
     let res2 = segs, at = head;
+    let joint = null;
     if (curved) {
-      const r = penNode(segs, head, segs[m].pts[0], { kind, out: o.out, drag: o.drag });
+      const r = penNode(segs, head, segs[m].pts[0], { kind, out: o.out, drag: o.drag, alt: o.alt });
       if (r) {
         res2 = r.segs;
         at = r.idx;
+        joint = r.out;
       }
     }
     res2 = res2.map(cp);
     res2.splice(at + 1, 0, { t: "Z", pts: [] });
+    if (joint) {
+      const f2 = res2[m + 1];
+      if (f2 && f2.t === "C") f2.pts[0] = [...joint.pt];
+      else if (f2 && f2.t === "L") res2[m + 1] = { t: "C", pts: [[...joint.pt], [...f2.pts[0]], [...f2.pts[0]]], dirty: 1 };
+    }
     return { segs: healSmooth(res2), idx: m };
   }
   var NUM2 = /[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
@@ -2371,11 +2384,12 @@ var SableEdit = (() => {
       items.push({ el: h, get: () => ctx.penOn && pendNow() ? pendNow().pt : null, r: 3.5 });
       gh.append(h);
       bind(h, () => {
-      }, (p) => {
+      }, (p, p0, ev) => {
         const q = pendNow(), k = head();
         if (!q) return;
-        q.pt = p;
         const s = segs[k];
+        q.pt = ev.shiftKey ? ctx.fit(ctx.constrain(s.pts.at(-1), p)) : p;
+        p = q.pt;
         if (q.sym && s.t === "C") s.pts[1] = [2 * s.pts[2][0] - p[0], 2 * s.pts[2][1] - p[1]];
       });
     }
@@ -2402,11 +2416,12 @@ var SableEdit = (() => {
     function closeGesture(e, v) {
       const key = "penc:" + ++uid, thr = e.pointerType === "touch" ? 8 : 3, x0 = e.clientX, y0 = e.clientY, out = pendNow();
       let dragging = false;
-      const run = (h) => {
-        const r = closeSub(v.segs, v.head, { kind: ctx.penSeg, out, drag: h });
+      const run = (h, alt) => {
+        const r = closeSub(v.segs, v.head, { kind: ctx.penSeg, out, drag: h, alt });
         if (!r) return false;
         segs = r.segs;
         S.clear();
+        if (h) S.pick("node", r.idx);
         pends.length = 0;
         drawM = null;
         if (!write(key)) return false;
@@ -2414,11 +2429,12 @@ var SableEdit = (() => {
         return true;
       };
       if (!run(null)) return;
+      const start = v.segs[subOf(v.segs, v.head).m].pts[0];
       const mv = (ev) => {
         if (dead) return up();
         if (!dragging && Math.hypot(ev.clientX - x0, ev.clientY - y0) <= thr) return;
         dragging = true;
-        run(ctx.fit(ctx.toLocal(ev)));
+        run(ctx.place(ev, start), ev.altKey);
       };
       const up = () => {
         window.removeEventListener("pointermove", mv);
@@ -2447,7 +2463,7 @@ var SableEdit = (() => {
       },
       // the path is done: no node selected, so the next press starts a new one
       hover(e) {
-        const v = e && ctx.penOn ? view() : null, r = v && penNode(v.segs, v.head, ctx.fit(ctx.toLocal(e)), { kind: ctx.penSeg, out: pendNow() }), d = r && segD(r.segs, r.idx);
+        const v = e && ctx.penOn ? view() : null, r = v && penNode(v.segs, v.head, ctx.place(e, v.segs[v.head].pts.at(-1)), { kind: ctx.penSeg, out: pendNow() }), d = r && segD(r.segs, r.idx);
         if (!d) {
           pv.style.display = "none";
           return;
@@ -2473,7 +2489,7 @@ var SableEdit = (() => {
           return { move(_, ev) {
             if (!dragging && Math.hypot(ev.clientX - x0, ev.clientY - y0) <= thr) return;
             dragging = true;
-            setPend(segs[0].pts[0], { pt: ctx.fit(ctx.toLocal(ev)), sym: false });
+            setPend(segs[0].pts[0], { pt: ctx.place(ev, segs[0].pts[0]), sym: false });
             layout();
           }, end() {
             layout();
@@ -2486,6 +2502,7 @@ var SableEdit = (() => {
         const v = view();
         if (!v) return null;
         const base = v.segs, hd = v.head, out = pendNow();
+        p = ctx.place(e, base[hd].pts.at(-1));
         const apply = (h, alt) => {
           const r = penNode(base, hd, p, { kind: ctx.penSeg, out, drag: h, alt });
           if (!r) {
@@ -2511,7 +2528,7 @@ var SableEdit = (() => {
           if (dead2) return;
           if (!dragging && Math.hypot(ev.clientX - x0, ev.clientY - y0) <= thr) return;
           dragging = true;
-          apply(ctx.fit(ctx.toLocal(ev)), ev.altKey);
+          apply(ctx.place(ev, p), ev.altKey);
         }, end() {
           layout();
           return null;
@@ -3027,7 +3044,7 @@ var SableEdit = (() => {
           pv.style.display = "none";
           return;
         }
-        const q = ctx.fit(ctx.toLocal(e)), line = [pts[h], q], M2 = ctx.matrix();
+        const q = ctx.place(e, pts[h]), line = [pts[h], q], M2 = ctx.matrix();
         if (closed && pts.length > 1) line.push(pts[(h + 1) % pts.length]);
         A3(pv, { points: line.map((z) => z.join(",")).join(" "), transform: `matrix(${M2.a} ${M2.b} ${M2.c} ${M2.d} ${M2.e} ${M2.f})` });
         pv.style.display = "";
@@ -3038,13 +3055,14 @@ var SableEdit = (() => {
         pv.style.display = "none";
         const key = o.key, thr = e.pointerType === "touch" ? 8 : 3, x0 = e.clientX, y0 = e.clientY, h0 = head();
         let idx = 0, wrote = false, dragging = false;
+        const from = !o.first && h0 >= 0 && pts[h0] ? [...pts[h0]] : null;
         if (o.first) {
           pts.splice(0, pts.length, ctx.fit(ctx.toLocal(e)));
           drawing = true;
           if (!write(key) || !pts.length) return null;
         } else {
           if (!allowed()) return null;
-          const r = polyAdd(pts, h0, ctx.fit(ctx.toLocal(e)), closed);
+          const r = polyAdd(pts, h0, ctx.place(e, from), closed);
           pts.splice(0, pts.length, ...r.pts);
           idx = r.idx;
           drawing = true;
@@ -3057,7 +3075,7 @@ var SableEdit = (() => {
         return { move(_, ev) {
           if (dead || !pts[idx] || !dragging && Math.hypot(ev.clientX - x0, ev.clientY - y0) <= thr) return;
           dragging = true;
-          pts[idx] = ctx.fit(ctx.toLocal(ev));
+          pts[idx] = ctx.place(ev, from);
           write(key);
           layout();
         }, end() {
@@ -4227,6 +4245,22 @@ var SableEdit = (() => {
           /* a point the pen is about to add, brought onto the policy's grid and inside its walls: the policy leaves added nodes alone (it judges edits
              to existing ones), and the pen is nothing but added nodes */
           fit: (q) => fitWith(perms(el), q, ownM(el)),
+          /* Shift in the pens: q onto the nearest multiple of 45 degrees as seen from `from` (both in the shape's coordinates; the angle is the one on screen,
+             whatever transform the shape has) */
+          constrain(from, q) {
+            const M2 = matrixFor(el), T = (z) => {
+              const r2 = new DOMPoint(z[0], z[1]).matrixTransform(M2);
+              return [r2.x, r2.y];
+            }, r = snapAngle(T(from), T(q)), b = new DOMPoint(r[0], r[1]).matrixTransform(M2.inverse());
+            return [b.x, b.y];
+          },
+          /* where the pen puts a point for pointer event ev: on the policy's grid and inside its walls, and with Shift held on a multiple of 45 degrees from
+             `from` (the grid and walls get the last word, so on a grid the angle holds where the grid allows) */
+          place(ev, from) {
+            const q = this.fit(this.toLocal(ev));
+            return ev.shiftKey && from ? this.fit(this.constrain(from, q)) : q;
+          },
+          // (called as a method of ctx)
           deny: (cap, reason) => emit("denied", { el, attr: "d", cap, reason, src: "widget" }),
           // a refusal that isn't a write (the pen won't continue a pinned shape)
           penRecent: () => performance.now() - lastPenAdd < 600,
@@ -4635,7 +4669,8 @@ var SableEdit = (() => {
       } })) }];
     };
     menuB.push(convertItems);
-    const onPenHover = (e) => {
+    let hov = null;
+    const hoverPen = (e) => {
       const T = Tools.get(tool);
       if (!T || gesture || e.pointerType === "touch") return;
       const over = !ov.contains(e.target) && !!editPick(T, e);
@@ -4645,11 +4680,25 @@ var SableEdit = (() => {
         pn && pn.hover(over || ov.contains(e.target) ? null : e);
       } else svg.style.cursor = over ? "default" : T.cursor || "crosshair";
     };
+    const onPenHover = (e) => {
+      hov = { clientX: e.clientX, clientY: e.clientY, pointerType: e.pointerType, target: e.target, altKey: e.altKey, shiftKey: e.shiftKey };
+      hoverPen(hov);
+    };
     const onPenLeave = () => {
+      hov = null;
       layer && layer.pen && layer.pen.hover(null);
+    };
+    const onShift = (e) => {
+      if (e.key !== "Shift" || e.repeat || !hov || !penOn()) return;
+      hov = { ...hov, shiftKey: e.type === "keydown" };
+      hoverPen(hov);
     };
     svg.addEventListener("pointermove", onPenHover);
     svg.addEventListener("pointerleave", onPenLeave);
+    if (opts.keys !== false) {
+      addEventListener("keydown", onShift);
+      addEventListener("keyup", onShift);
+    }
     const closeMenu = () => {
       menuCtl && menuCtl.close();
       menuCtl = null;
@@ -4732,6 +4781,8 @@ var SableEdit = (() => {
         svg.removeEventListener("pointerleave", onPenLeave);
         svg.removeEventListener("pointerdown", onDown, true);
         removeEventListener("keydown", onKey);
+        removeEventListener("keydown", onShift);
+        removeEventListener("keyup", onShift);
         if (!opts.overlay) ov.remove();
       },
       get mode() {

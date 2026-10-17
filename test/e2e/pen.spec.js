@@ -111,13 +111,57 @@ test('pressing the other end closes the path, from two nodes on: a quadratic clo
   await expect(page.locator('#sketch path')).toHaveCount(3);
 });
 
-test('a drag on the closing press pulls the closing segment out into a curve', async ({ page }) => {
+test('a drag on the closing press pulls the closing segment out into a curve, and the first segment leaves the node on the same line (as a drag on any other node)', async ({ page }) => {
   await page.goto('/demo/');
   await arm(page);
   const a = await at(page, .2, .6), b = await at(page, .4, .6);
   await page.mouse.click(a.x, a.y); await page.mouse.click(b.x, b.y);
   await drag(page, a, 10, -60);
-  expect(cmds(await D(page))).toBe('MHCZ');
+  const d = await D(page);
+  expect(cmds(d)).toBe('MCCZ');                          // the first segment was a line: it takes the handle, so it is a cubic now
+  const n = d.match(/-?[\d.]+/g).map(Number);          // M x y  C c1 c2 x y  C c1 c2 x y  Z
+  expect(Math.abs(n[2] + n[10] - 2 * n[0])).toBeLessThan(.01); // the first segment's handle and the closing segment's mirror each other about the start
+  expect(Math.abs(n[3] + n[11] - 2 * n[1])).toBeLessThan(.01);
+  expect(Math.hypot(n[2] - n[0], n[3] - n[1])).toBeGreaterThan(5);   // and the handle was really pulled out
+});
+
+test('Shift holds the new node on a multiple of 45 degrees from the one before it', async ({ page }) => {
+  await page.goto('/demo/');
+  await arm(page);
+  const a = await at(page, .2, .3), b = await at(page, .5, .3);
+  await page.mouse.click(a.x, a.y);
+  await page.keyboard.down('Shift');
+  await page.mouse.click(b.x, b.y + 14);                 // a little below the horizontal
+  await page.keyboard.up('Shift');
+  expect(cmds(await D(page))).toBe('MH');                // ... and it is horizontal exactly
+  await page.keyboard.down('Shift');
+  await page.mouse.click(b.x + 80, b.y + 70);            // 41 degrees below the horizontal from the last node
+  await page.keyboard.up('Shift');
+  let n = (await D(page)).match(/-?[\d.]+/g).map(Number);   // M x y  H x  L x y
+  expect(cmds(await D(page))).toBe('MHL');
+  expect(Math.abs(Math.abs(n[3] - n[2]) - Math.abs(n[4] - n[1]))).toBeLessThan(.01);   // a 45 degree segment
+  expect(Math.abs(n[3] - n[2])).toBeGreaterThan(5);
+  await page.mouse.click(b.x + 130, b.y + 83);           // without Shift nothing is held: 13 down over 50 across
+  n = (await D(page)).match(/-?[\d.]+/g).map(Number);   // ... L x y
+  expect(n.length).toBe(7);
+  expect(Math.abs(Math.abs(n[5] - n[3]) - Math.abs(n[6] - n[4]))).toBeGreaterThan(.5);
+  expect(Math.abs(n[6] - n[4])).toBeGreaterThan(.5);
+});
+
+test('Shift while dragging a new node holds its handle on a multiple of 45 degrees from the node', async ({ page }) => {
+  await page.goto('/demo/');
+  await arm(page);
+  const a = await at(page, .2, .6), b = await at(page, .5, .6);
+  await page.mouse.click(a.x, a.y);
+  await page.mouse.move(b.x, b.y); await page.mouse.down();
+  await page.mouse.move(b.x + 20, b.y - 10, { steps: 3 });
+  await page.keyboard.down('Shift');
+  await page.mouse.move(b.x + 60, b.y - 14, { steps: 3 });  // 14 up, 60 across: nearly horizontal
+  await page.mouse.up(); await page.keyboard.up('Shift');
+  const n = (await D(page)).match(/-?[\d.]+/g).map(Number);  // M x y  C c1 c2 x y: the second control is the mirror of the handle about the node
+  expect(cmds(await D(page))).toBe('MC');
+  expect(Math.abs(n[5] - n[7])).toBeLessThan(.01);          // control 2 and the node are level: the handle is horizontal
+  expect(Math.abs(n[4] - n[6])).toBeGreaterThan(5);
 });
 
 test('clicking the end node again finishes; the pen can continue a path from its selected endpoint, even the first node', async ({ page }) => {
